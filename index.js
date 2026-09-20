@@ -1238,57 +1238,65 @@
         });
     }
 
-    // PC 端支持按住歌单栏空白处/标签拖动横向滚动。
-    // 关键点：只在真正发生横向移动后阻止默认行为，不拦截普通 click，
-    // 因此“切换歌单 / 删除 / 新建”不会被拖拽逻辑吞掉。
+    // PC 端支持按住歌单栏横向拖动。
+    // 不使用 pointer capture，避免浏览器把普通点击转换成“拖拽”后吞掉 click。
+    // 只有实际移动超过阈值时才抑制一次 click，因此点击歌单仍可正常切换。
     function initPlaylistTabsDrag() {
         const tabs = UI.playlistTabs;
         if (!tabs) return;
 
-        let isDragging = false;
+        let isMouseDown = false;
         let moved = false;
         let startX = 0;
         let startScrollLeft = 0;
-        let pointerId = null;
+        let suppressClick = false;
 
-        const onPointerDown = (e) => {
-            if (e.pointerType === 'mouse' && e.button !== 0) return;
+        tabs.addEventListener('mousedown', (e) => {
+            if (e.button !== 0) return;
             if (e.target.closest('.fm-tab-del, .fm-tab-add')) return;
 
-            isDragging = true;
+            isMouseDown = true;
             moved = false;
-            pointerId = e.pointerId;
+            suppressClick = false;
             startX = e.clientX;
             startScrollLeft = tabs.scrollLeft;
             tabs.classList.add('dragging');
+        });
 
-            try { tabs.setPointerCapture(e.pointerId); } catch (err) {}
-        };
-
-        const onPointerMove = (e) => {
-            if (!isDragging || e.pointerId !== pointerId) return;
+        tabs.addEventListener('mousemove', (e) => {
+            if (!isMouseDown) return;
 
             const dx = e.clientX - startX;
-            if (Math.abs(dx) > 4) moved = true;
+            if (Math.abs(dx) > 5) moved = true;
 
             if (moved) {
                 e.preventDefault();
+                suppressClick = true;
                 tabs.scrollLeft = startScrollLeft - dx;
+            }
+        });
+
+        const endMouseDrag = () => {
+            if (!isMouseDown) return;
+            isMouseDown = false;
+            tabs.classList.remove('dragging');
+
+            // 给 click 一个短暂的“刚刚拖过”标记。
+            if (moved) {
+                setTimeout(() => { suppressClick = false; }, 0);
             }
         };
 
-        const endDrag = (e) => {
-            if (!isDragging) return;
-            isDragging = false;
-            tabs.classList.remove('dragging');
-            try { tabs.releasePointerCapture(pointerId); } catch (err) {}
-            pointerId = null;
-        };
+        tabs.addEventListener('mouseup', endMouseDrag);
+        tabs.addEventListener('mouseleave', endMouseDrag);
 
-        tabs.addEventListener('pointerdown', onPointerDown);
-        tabs.addEventListener('pointermove', onPointerMove, { passive: false });
-        tabs.addEventListener('pointerup', endDrag);
-        tabs.addEventListener('pointercancel', endDrag);
+        // 只拦截真正拖动后的那一次 click；普通点击完全不受影响。
+        tabs.addEventListener('click', (e) => {
+            if (!suppressClick) return;
+            e.preventDefault();
+            e.stopPropagation();
+            suppressClick = false;
+        }, true);
 
         // PC 鼠标滚轮悬停在歌单栏时，也可转换为横向滚动。
         tabs.addEventListener('wheel', (e) => {
