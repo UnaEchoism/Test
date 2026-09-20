@@ -379,7 +379,7 @@
         .fm-playlist-tabs { width:100%; max-width:100%; min-width:0; flex:0 1 auto; display: flex; align-items: center; overflow-x: auto; overflow-y: hidden; padding: 6px 0; gap: 6px; border-bottom: 0; background: transparent; touch-action: pan-x; -webkit-overflow-scrolling: touch; scrollbar-width: none; -ms-overflow-style: none; cursor: grab; user-select: none; }
         .fm-playlist-tabs::-webkit-scrollbar { width: 0 !important; height: 0 !important; display: none !important; }
         .fm-playlist-tabs.dragging { cursor: grabbing; }
-        .fm-tab { padding: 4px 12px; border-radius: var(--fm-radius-input); font-size: 11px; color: var(--fm-text-sub); background: transparent; border: 1px solid transparent; cursor: pointer; white-space: nowrap; transition: var(--fm-transition); user-select: none; }
+        .fm-tab { position:relative; z-index:1; pointer-events:auto; padding: 4px 12px; border-radius: var(--fm-radius-input); font-size: 11px; color: var(--fm-text-sub); background: transparent; border: 1px solid transparent; cursor: pointer; white-space: nowrap; transition: var(--fm-transition); user-select: none; }
         .fm-tab:hover { color: var(--fm-text-main); background: rgba(255,255,255,0.05); }
         .fm-tab.active { color: var(--fm-accent); background: rgba(0, 210, 255, 0.1); border-color: var(--fm-accent); font-weight: bold; }
         .fm-tab-del { margin-left: 6px; font-size: 10px; opacity: 0.5; transition: opacity 0.2s; }
@@ -1227,6 +1227,12 @@
             }
 
             tab.addEventListener('click', (e) => {
+                if (UI.playlistTabs._fmSkipNextTabClick) {
+                    UI.playlistTabs._fmSkipNextTabClick = false;
+                    e.preventDefault();
+                    e.stopPropagation();
+                    return;
+                }
                 if (e.target.closest('.fm-tab-del')) return;
 
                 STATE.currentPlaylistId = p.id;
@@ -1238,9 +1244,9 @@
         });
     }
 
-    // PC 端支持按住歌单栏横向拖动。
-    // 不使用 pointer capture，避免浏览器把普通点击转换成“拖拽”后吞掉 click。
-    // 只有实际移动超过阈值时才抑制一次 click，因此点击歌单仍可正常切换。
+    // PC 端歌单横向拖动：
+    // 不在 tabs 上拦截 click，也不使用 pointer capture。
+    // 普通点击始终交给具体歌单 tab；只有实际横向移动后才跳过那一次 click。
     function initPlaylistTabsDrag() {
         const tabs = UI.playlistTabs;
         if (!tabs) return;
@@ -1249,7 +1255,9 @@
         let moved = false;
         let startX = 0;
         let startScrollLeft = 0;
-        let suppressClick = false;
+
+        // 用元素属性保存状态，因为 renderTabs() 会反复重建 tab。
+        tabs._fmSkipNextTabClick = false;
 
         tabs.addEventListener('mousedown', (e) => {
             if (e.button !== 0) return;
@@ -1257,48 +1265,45 @@
 
             isMouseDown = true;
             moved = false;
-            suppressClick = false;
             startX = e.clientX;
             startScrollLeft = tabs.scrollLeft;
             tabs.classList.add('dragging');
         });
 
-        tabs.addEventListener('mousemove', (e) => {
-            if (!isMouseDown) return;
+        const onMouseMove = (e) => {
+            if (!isMouseDown || !(e.buttons & 1)) return;
 
             const dx = e.clientX - startX;
-            if (Math.abs(dx) > 5) moved = true;
+            if (Math.abs(dx) <= 5) return;
 
-            if (moved) {
-                e.preventDefault();
-                suppressClick = true;
-                tabs.scrollLeft = startScrollLeft - dx;
-            }
-        });
+            moved = true;
+            e.preventDefault();
+            tabs.scrollLeft = startScrollLeft - dx;
+        };
 
-        const endMouseDrag = () => {
+        const onMouseUp = () => {
             if (!isMouseDown) return;
+
             isMouseDown = false;
             tabs.classList.remove('dragging');
 
-            // 给 click 一个短暂的“刚刚拖过”标记。
+            // 鼠标拖动后，浏览器接下来会合成一次 click。
+            // 跳过这一回，避免“拖动后误切换到松手位置的歌单”。
             if (moved) {
-                setTimeout(() => { suppressClick = false; }, 0);
+                tabs._fmSkipNextTabClick = true;
+                setTimeout(() => {
+                    tabs._fmSkipNextTabClick = false;
+                }, 250);
             }
+
+            moved = false;
         };
 
-        tabs.addEventListener('mouseup', endMouseDrag);
-        tabs.addEventListener('mouseleave', endMouseDrag);
+        // 监听 document，鼠标拖出歌单栏后仍能继续拖动。
+        targetDoc.addEventListener('mousemove', onMouseMove, { passive: false });
+        targetDoc.addEventListener('mouseup', onMouseUp);
 
-        // 只拦截真正拖动后的那一次 click；普通点击完全不受影响。
-        tabs.addEventListener('click', (e) => {
-            if (!suppressClick) return;
-            e.preventDefault();
-            e.stopPropagation();
-            suppressClick = false;
-        }, true);
-
-        // PC 鼠标滚轮悬停在歌单栏时，也可转换为横向滚动。
+        // PC 鼠标滚轮悬停在歌单栏时，纵向滚轮转换为横向滚动。
         tabs.addEventListener('wheel', (e) => {
             if (Math.abs(e.deltaY) <= Math.abs(e.deltaX)) return;
             if (tabs.scrollWidth <= tabs.clientWidth) return;
