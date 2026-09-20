@@ -131,7 +131,8 @@
         playingPlaylistId: savedPlaylists[0].id,
         searchResults: [],
         currentInputMode: 'netease',
-        isShowingSearch: false, 
+        isShowingSearch: false,
+        isPlaylistHome: true,
         localSearchKeyword: '', 
         currentIndex: -1,
         lyricsData: [],
@@ -152,9 +153,9 @@
         toast(msg) {
             if (typeof triggerSlash === 'function') {
                 const safeMsg = msg.replace(/(\\+)?([|{}])/g, (m, s, c) => (s || '') + (s || '') + '\\' + c);
-                triggerSlash(`/echo severity=info [АрⅤ终端] ${safeMsg}`);
+                triggerSlash(`/echo severity=info [播放器测试] ${safeMsg}`);
             } else {
-                console.log(`[АрⅤ终端] ${msg}`);
+                console.log(`[播放器测试] ${msg}`);
             }
         },
         _extractArray(data) {
@@ -307,8 +308,7 @@
         .theme-dark { --fm-bg: rgba(20, 20, 20, 0.9); --fm-text-main: #f0f0f0; --fm-text-sub: #888888; --fm-accent: #ffffff; --fm-border: rgba(255, 255, 255, 0.08); --fm-shadow: rgba(0, 0, 0, 0.4); }
         .theme-glass { --fm-bg: rgba(255, 255, 255, 0.1); --fm-text-main: #ffffff; --fm-text-sub: rgba(255,255,255,0.7); --fm-accent: var(--fm-custom-color, #ffffff); --fm-border: rgba(255, 255, 255, 0.2); --fm-shadow: rgba(0, 0, 0, 0.2); }
 
-        * { box-sizing: border-box; font-family: var(--fm-font); margin: 0; padding: 0; scrollbar-width: none; -ms-overflow-style: none; }
-        *::-webkit-scrollbar { width: 0 !important; height: 0 !important; display: none !important; }
+        * { box-sizing: border-box; font-family: var(--fm-font); margin: 0; padding: 0; }
 
         .fm-ball {
             position: absolute; width: var(--fm-ball-size, 50px); height: var(--fm-ball-size, 50px); 
@@ -376,16 +376,23 @@
         .fm-add-btn:hover { opacity: 0.8; }
         .fm-add-btn:disabled { opacity: 0.5; cursor: not-allowed; }
 
-        .fm-playlist-tabs { width:100%; max-width:100%; min-width:0; flex:0 1 auto; display: flex; align-items: center; overflow-x: auto; overflow-y: hidden; padding: 6px 0; gap: 6px; border-bottom: 0; background: transparent; touch-action: pan-x; -webkit-overflow-scrolling: touch; scrollbar-width: none; -ms-overflow-style: none; cursor: grab; user-select: none; }
-        .fm-playlist-tabs::-webkit-scrollbar { width: 0 !important; height: 0 !important; display: none !important; }
-        .fm-playlist-tabs.dragging { cursor: grabbing; }
-        .fm-tab { position:relative; z-index:1; pointer-events:auto; padding: 4px 12px; border-radius: var(--fm-radius-input); font-size: 11px; color: var(--fm-text-sub); background: transparent; border: 1px solid transparent; cursor: pointer; white-space: nowrap; transition: var(--fm-transition); user-select: none; }
-        .fm-tab:hover { color: var(--fm-text-main); background: rgba(255,255,255,0.05); }
-        .fm-tab.active { color: var(--fm-accent); background: rgba(0, 210, 255, 0.1); border-color: var(--fm-accent); font-weight: bold; }
-        .fm-tab-del { margin-left: 6px; font-size: 10px; opacity: 0.5; transition: opacity 0.2s; }
-        .fm-tab-del:hover { opacity: 1; color: #ff4d4f; }
-        .fm-tab-add { padding: 4px 8px; border-radius: var(--fm-radius-input); font-size: 12px; color: var(--fm-text-sub); cursor: pointer; transition: var(--fm-transition); display: flex; align-items: center; }
-        .fm-tab-add:hover { color: var(--fm-accent); background: rgba(255,255,255,0.1); }
+        .fm-playlist-tabs { display: flex; flex-direction: column; gap: 6px; padding: 4px 0; background: transparent; overflow-y: auto; overflow-x: hidden; scrollbar-width: none; }
+        .fm-playlist-tabs::-webkit-scrollbar { width: 0; height: 0; display: none; }
+        .fm-playlist-row { display: flex; align-items: center; gap: 10px; min-height: 46px; padding: 7px 10px; border: 1px solid transparent; border-radius: var(--fm-radius-input); background: rgba(255,255,255,0.025); color: var(--fm-text-main); cursor: pointer; transition: var(--fm-transition); user-select: none; box-sizing: border-box; }
+        .fm-playlist-row:hover { background: rgba(255,255,255,0.07); border-color: var(--fm-border); }
+        .fm-playlist-row-icon { width: 28px; height: 28px; flex: 0 0 28px; display: flex; align-items: center; justify-content: center; border-radius: 8px; background: rgba(0,210,255,0.1); color: var(--fm-accent); font-size: 12px; }
+        .fm-playlist-row-info { min-width: 0; flex: 1 1 auto; display: flex; flex-direction: column; gap: 2px; }
+        .fm-playlist-row-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; color: var(--fm-text-main); }
+        .fm-playlist-row-count { font-size: 9px; color: var(--fm-text-sub); }
+        .fm-playlist-row-arrow { flex: 0 0 auto; color: var(--fm-text-sub); font-size: 10px; }
+        .fm-playlist-row-delete { flex: 0 0 28px; width: 28px; height: 28px; display: flex; align-items: center; justify-content: center; border: 0; background: transparent; color: var(--fm-text-sub); border-radius: 7px; cursor: pointer; }
+        .fm-playlist-row-delete:hover { color: #ff4d4f; background: rgba(255,77,79,0.1); }
+        .fm-playlist-add-row { display: flex; align-items: center; justify-content: center; gap: 7px; min-height: 40px; padding: 7px 10px; margin-top: 2px; border: 1px dashed var(--fm-border); border-radius: var(--fm-radius-input); background: transparent; color: var(--fm-text-sub); cursor: pointer; font-size: 11px; transition: var(--fm-transition); box-sizing: border-box; }
+        .fm-playlist-add-row:hover { color: var(--fm-accent); border-color: var(--fm-accent); background: rgba(0,210,255,0.05); }
+        .fm-playlist-detail-head { display: flex; align-items: center; gap: 8px; padding: 3px 0 8px; }
+        .fm-playlist-back { display: inline-flex; align-items: center; gap: 6px; padding: 5px 8px; border: 0; border-radius: 8px; background: transparent; color: var(--fm-text-sub); cursor: pointer; font-size: 11px; }
+        .fm-playlist-back:hover { color: var(--fm-text-main); background: rgba(255,255,255,0.06); }
+        .fm-playlist-detail-title { min-width: 0; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; font-weight: 700; color: var(--fm-text-main); }
 
         /* 修复下拉菜单越界问题：移至顶层并使用 fixed 绝对定位 */
         .fm-pop-menu {
@@ -584,7 +591,7 @@
         .fm-library-input .fm-add-btn { height:38px; }
         .fm-page-playlist { flex:0 0 auto; min-height:0; display:flex; flex-direction:column; gap:10px; }
         .fm-page-playlist .fm-list-section { min-height:150px; flex:0 0 auto; border:0; border-radius:0; overflow:visible; background:transparent; }
-        .fm-page-playlist .fm-playlist-tabs { flex:0 0 auto;  min-width:0; max-width:100%; width:100%;}
+        .fm-page-playlist .fm-playlist-tabs { flex:0 0 auto; width:100%; min-width:0; box-sizing:border-box; }
         .fm-page-playlist .fm-playlist { min-height:0; overflow:visible; }
         .fm-settings-section { padding:8px 0; }
         .fm-settings-section-title { font-size:12px; font-weight:800; color:var(--fm-text-main); margin-bottom:12px; }
@@ -634,7 +641,7 @@
             <div class="fm-app-head">
                 <div class="fm-brand">
                     <div class="fm-brand-text">
-                        <div class="fm-app-name">АрⅤ Terminal</div>
+                        <div class="fm-app-name">播放器测试</div>
                         <div class="fm-app-sub">MUSIC PLAYER</div>
                     </div>
                 </div>
@@ -650,7 +657,7 @@
                         </div>
                         <div class="fm-now-meta">
                             <div class="fm-section-kicker" id="fm-now-playing-label">NOW PLAYING</div>
-                            <div class="fm-title" id="fm-title">АрⅤ Terminal</div>
+                            <div class="fm-title" id="fm-title">播放器测试</div>
                             <div class="fm-artist" id="fm-artist">Awaiting Connection...</div>
                         </div>
                     </div>
@@ -1135,181 +1142,125 @@
     function renderTabs() {
         UI.playlistTabs.innerHTML = '';
 
-        // 新建歌单固定在最左侧，歌单再多也不用翻到最后。
-        const addTab = targetDoc.createElement('div');
-        addTab.className = 'fm-tab-add';
-        addTab.innerHTML = '<i class="fas fa-plus"></i>';
-        addTab.title = '新建歌单';
-        addTab.setAttribute('role', 'button');
-        addTab.addEventListener('click', (e) => {
-            e.preventDefault();
-            e.stopPropagation();
+        if (!STATE.isPlaylistHome) {
+            const current = getCurrentPlaylist();
+            const head = targetDoc.createElement('div');
+            head.className = 'fm-playlist-detail-head';
 
-            const name = targetWin.prompt('请输入新歌单名称：', '新建歌单');
-            if (!name || !name.trim()) return;
+            const back = targetDoc.createElement('button');
+            back.className = 'fm-playlist-back';
+            back.type = 'button';
+            back.innerHTML = '<i class="fas fa-chevron-left"></i><span>歌单</span>';
+            back.onclick = (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                STATE.isPlaylistHome = true;
+                STATE.isShowingSearch = false;
+                renderListUI();
+            };
 
-            const newId = 'pl_' + Date.now() + '_' + Math.random().toString(36).slice(2, 7);
-            STATE.playlists.push({
-                id: newId,
-                name: name.trim(),
-                tracks: []
-            });
-            STATE.currentPlaylistId = newId;
-            STATE.isShowingSearch = false;
-            savePlaylist();
-            renderListUI();
+            const title = targetDoc.createElement('div');
+            title.className = 'fm-playlist-detail-title';
+            title.textContent = current ? current.name : '歌单';
 
-            // 创建后只滚动“歌单标签栏”本身。
-            // 不使用 scrollIntoView，避免浏览器把整个播放器页面/宿主页面一起横向滚动。
-            requestAnimationFrame(() => {
-                const active = UI.playlistTabs.querySelector('.fm-tab.active');
-                if (!active) return;
+            head.appendChild(back);
+            head.appendChild(title);
+            UI.playlistTabs.appendChild(head);
+            return;
+        }
 
-                const tabs = UI.playlistTabs;
-                const left = active.offsetLeft;
-                const right = left + active.offsetWidth;
-                const viewLeft = tabs.scrollLeft;
-                const viewRight = viewLeft + tabs.clientWidth;
-
-                if (left < viewLeft) {
-                    tabs.scrollLeft = Math.max(0, left - 8);
-                } else if (right > viewRight) {
-                    tabs.scrollLeft = Math.min(
-                        Math.max(0, tabs.scrollWidth - tabs.clientWidth),
-                        right - tabs.clientWidth + 8
-                    );
-                }
-            });
-        });
-        UI.playlistTabs.appendChild(addTab);
+        const title = targetDoc.createElement('div');
+        title.className = 'fm-playlist-detail-title';
+        title.style.cssText = 'padding:4px 2px 3px;font-size:14px;';
+        title.textContent = '我的歌单';
+        UI.playlistTabs.appendChild(title);
 
         STATE.playlists.forEach(p => {
-            const tab = targetDoc.createElement('div');
-            tab.className = `fm-tab ${p.id === STATE.currentPlaylistId ? 'active' : ''}`;
+            const row = targetDoc.createElement('div');
+            row.className = 'fm-playlist-row';
+            row.setAttribute('role', 'button');
+            row.tabIndex = 0;
 
-            if (p.id === 'default') {
-                tab.textContent = p.name;
-            } else {
-                const nameSpan = targetDoc.createElement('span');
-                nameSpan.textContent = p.name;
+            const icon = targetDoc.createElement('div');
+            icon.className = 'fm-playlist-row-icon';
+            icon.innerHTML = p.id === 'default' ? '<i class="fas fa-music"></i>' : '<i class="fas fa-list"></i>';
 
-                const del = targetDoc.createElement('i');
-                del.className = 'fas fa-times fm-tab-del';
+            const info = targetDoc.createElement('div');
+            info.className = 'fm-playlist-row-info';
+            const name = targetDoc.createElement('div');
+            name.className = 'fm-playlist-row-name';
+            name.textContent = p.name;
+            const count = targetDoc.createElement('div');
+            count.className = 'fm-playlist-row-count';
+            count.textContent = `${p.tracks.length} 首歌曲`;
+            info.appendChild(name);
+            info.appendChild(count);
+
+            row.appendChild(icon);
+            row.appendChild(info);
+
+            if (p.id !== 'default') {
+                const del = targetDoc.createElement('button');
+                del.className = 'fm-playlist-row-delete';
+                del.type = 'button';
                 del.title = '删除歌单';
-                del.setAttribute('role', 'button');
-
-                // 删除按钮单独绑定，避免 PC 端横向拖拽/父级点击影响删除。
-                del.addEventListener('click', (e) => {
+                del.innerHTML = '<i class="fas fa-trash-alt"></i>';
+                del.onclick = (e) => {
                     e.preventDefault();
                     e.stopPropagation();
-
-                    const confirmed = targetWin.confirm(`确定要删除歌单 [${p.name}] 吗？`);
-                    if (!confirmed) return;
-
+                    if (!targetWin.confirm(`确定要删除歌单 [${p.name}] 吗？`)) return;
                     STATE.playlists = STATE.playlists.filter(list => list.id !== p.id);
-
-                    if (STATE.currentPlaylistId === p.id) {
-                        STATE.currentPlaylistId = 'default';
-                    }
-
+                    if (STATE.currentPlaylistId === p.id) STATE.currentPlaylistId = 'default';
                     if (STATE.playingPlaylistId === p.id) {
                         audio.pause();
                         STATE.playingPlaylistId = 'default';
                         STATE.currentIndex = -1;
                     }
-
                     savePlaylist();
                     renderListUI();
-                });
-
-                tab.appendChild(nameSpan);
-                tab.appendChild(del);
+                };
+                row.appendChild(del);
+            } else {
+                const arrow = targetDoc.createElement('div');
+                arrow.className = 'fm-playlist-row-arrow';
+                arrow.innerHTML = '<i class="fas fa-chevron-right"></i>';
+                row.appendChild(arrow);
             }
 
-            tab.addEventListener('click', (e) => {
-                if (UI.playlistTabs._fmSkipNextTabClick) {
-                    UI.playlistTabs._fmSkipNextTabClick = false;
-                    e.preventDefault();
-                    e.stopPropagation();
-                    return;
-                }
-                if (e.target.closest('.fm-tab-del')) return;
-
+            const open = () => {
                 STATE.currentPlaylistId = p.id;
                 STATE.isShowingSearch = false;
+                STATE.isPlaylistHome = false;
                 renderListUI();
+            };
+            row.addEventListener('click', open);
+            row.addEventListener('keydown', (e) => {
+                if (e.key === 'Enter' || e.key === ' ') {
+                    e.preventDefault();
+                    open();
+                }
             });
-
-            UI.playlistTabs.appendChild(tab);
-        });
-    }
-
-    // PC 端歌单横向拖动：
-    // 不在 tabs 上拦截 click，也不使用 pointer capture。
-    // 普通点击始终交给具体歌单 tab；只有实际横向移动后才跳过那一次 click。
-    function initPlaylistTabsDrag() {
-        const tabs = UI.playlistTabs;
-        if (!tabs) return;
-
-        let isMouseDown = false;
-        let moved = false;
-        let startX = 0;
-        let startScrollLeft = 0;
-
-        // 用元素属性保存状态，因为 renderTabs() 会反复重建 tab。
-        tabs._fmSkipNextTabClick = false;
-
-        tabs.addEventListener('mousedown', (e) => {
-            if (e.button !== 0) return;
-            if (e.target.closest('.fm-tab-del, .fm-tab-add')) return;
-
-            isMouseDown = true;
-            moved = false;
-            startX = e.clientX;
-            startScrollLeft = tabs.scrollLeft;
-            tabs.classList.add('dragging');
+            UI.playlistTabs.appendChild(row);
         });
 
-        const onMouseMove = (e) => {
-            if (!isMouseDown || !(e.buttons & 1)) return;
-
-            const dx = e.clientX - startX;
-            if (Math.abs(dx) <= 5) return;
-
-            moved = true;
+        const addRow = targetDoc.createElement('div');
+        addRow.className = 'fm-playlist-add-row';
+        addRow.setAttribute('role', 'button');
+        addRow.innerHTML = '<i class="fas fa-plus"></i><span>新建歌单</span>';
+        addRow.onclick = (e) => {
             e.preventDefault();
-            tabs.scrollLeft = startScrollLeft - dx;
+            e.stopPropagation();
+            const name = targetWin.prompt('请输入新歌单名称：', '新建歌单');
+            if (!name || !name.trim()) return;
+            const newId = 'pl_' + Date.now() + '_' + Math.random().toString(36).slice(2, 7);
+            STATE.playlists.push({ id: newId, name: name.trim(), tracks: [] });
+            STATE.currentPlaylistId = newId;
+            STATE.isShowingSearch = false;
+            STATE.isPlaylistHome = false;
+            savePlaylist();
+            renderListUI();
         };
-
-        const onMouseUp = () => {
-            if (!isMouseDown) return;
-
-            isMouseDown = false;
-            tabs.classList.remove('dragging');
-
-            // 鼠标拖动后，浏览器接下来会合成一次 click。
-            // 跳过这一回，避免“拖动后误切换到松手位置的歌单”。
-            if (moved) {
-                tabs._fmSkipNextTabClick = true;
-                setTimeout(() => {
-                    tabs._fmSkipNextTabClick = false;
-                }, 250);
-            }
-
-            moved = false;
-        };
-
-        // 监听 document，鼠标拖出歌单栏后仍能继续拖动。
-        targetDoc.addEventListener('mousemove', onMouseMove, { passive: false });
-        targetDoc.addEventListener('mouseup', onMouseUp);
-
-        // PC 鼠标滚轮悬停在歌单栏时，纵向滚轮转换为横向滚动。
-        tabs.addEventListener('wheel', (e) => {
-            if (Math.abs(e.deltaY) <= Math.abs(e.deltaX)) return;
-            if (tabs.scrollWidth <= tabs.clientWidth) return;
-            e.preventDefault();
-            tabs.scrollLeft += e.deltaY;
-        }, { passive: false });
+        UI.playlistTabs.appendChild(addRow);
     }
 
     // 事件发生在 Shadow DOM 内，监听 wrapper 比监听宿主 document 更可靠。
@@ -1397,6 +1348,7 @@
             API.toast(`已添加至 [${targetList.name}]`);
             STATE.isShowingSearch = false;
             STATE.currentPlaylistId = playlistId;
+            STATE.isPlaylistHome = false;
             renderListUI();
             
             if (STATE.currentIndex === -1 && STATE.playingPlaylistId === playlistId) {
@@ -1422,7 +1374,7 @@
                     if (sourceList.tracks.length > 0) playTrack(sourceIndex % sourceList.tracks.length, sourcePlaylistId);
                     else {
                         STATE.currentIndex = -1;
-                        UI.title.textContent = 'АрⅤ Terminal';
+                        UI.title.textContent = '播放器测试';
                         UI.artist.textContent = 'Awaiting Connection...';
                         UI.outLyrics.innerHTML = '';
                     }
@@ -1441,6 +1393,10 @@
     function renderListUI() {
         renderTabs();
         UI.playlistEl.innerHTML = '';
+
+        if (STATE.isPlaylistHome && !STATE.isShowingSearch) {
+            return;
+        }
         
         if (STATE.isShowingSearch) {
             const header = targetDoc.createElement('div');
@@ -1448,6 +1404,7 @@
             header.innerHTML = `<span>搜索结果 (${STATE.searchResults.length})</span><span class="fm-back-list">返回列表</span>`;
             header.querySelector('.fm-back-list').onclick = () => {
                 STATE.isShowingSearch = false;
+                STATE.isPlaylistHome = true;
                 renderListUI();
             };
             UI.playlistEl.appendChild(header);
@@ -1508,7 +1465,7 @@
                         if (STATE.playingPlaylistId === currentListObj.id) {
                             audio.pause();
                             STATE.currentIndex = -1;
-                            UI.title.textContent = 'АрⅤ Terminal';
+                            UI.title.textContent = '播放器测试';
                             UI.artist.textContent = 'Awaiting Connection...';
                             UI.outLyrics.innerHTML = '';
                         }
@@ -1583,7 +1540,7 @@
                 if (targetList.tracks.length > 0) playTrack(index % targetList.tracks.length, playlistId);
                 else {
                     STATE.currentIndex = -1;
-                    UI.title.textContent = 'АрⅤ Terminal';
+                    UI.title.textContent = '播放器测试';
                     UI.artist.textContent = 'Awaiting Connection...';
                     UI.outLyrics.innerHTML = '';
                 }
@@ -2504,8 +2461,8 @@
         const item = doc.createElement('div');
         item.id = 'arvTerminalExtensionMenuItem';
         item.className = 'list-group-item flex-container flexGap5';
-        item.title = '打开 АрⅤ Terminal 音乐播放器';
-        item.innerHTML = '<div class="fa-fw fa-solid fa-music extensionsMenuExtensionButton"></div><span>АрⅤ播放器</span>';
+        item.title = '打开 播放器测试 音乐播放器';
+        item.innerHTML = '<div class="fa-fw fa-solid fa-music extensionsMenuExtensionButton"></div><span>播放器测试</span>';
 
         item.addEventListener('click', (event) => {
             event.preventDefault();
@@ -2525,7 +2482,6 @@
     // ================= 初始化 =================
     initDraggable();
     initProgressBar();
-    initPlaylistTabsDrag();
     renderListUI(); 
     
     if (startupDedupeCount > 0 || startupLimitCount > 0) {
