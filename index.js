@@ -782,14 +782,6 @@
                     </div>
 
                     <section class="fm-page-playlist" id="fm-playlist-section">
-                        <div class="fm-page-title">
-                            <div>
-                                <div class="fm-section-kicker">LIBRARY</div>
-                                <h2>歌单</h2>
-                            </div>
-                            <span class="fm-count-badge" id="fm-library-count">LIBRARY</span>
-                        </div>
-
                         <div class="fm-input-wrap fm-library-input">
                             <select class="fm-select" id="fm-source-select">
                                 <option value="netease">网易云</option>
