@@ -376,7 +376,7 @@
         .fm-add-btn:hover { opacity: 0.8; }
         .fm-add-btn:disabled { opacity: 0.5; cursor: not-allowed; }
 
-        .fm-playlist-tabs { display: flex; align-items: center; overflow-x: auto; overflow-y: hidden; padding: 6px 0; gap: 6px; border-bottom: 0; background: transparent; touch-action: pan-x; -webkit-overflow-scrolling: touch; scrollbar-width: none; -ms-overflow-style: none; cursor: grab; user-select: none; }
+        .fm-playlist-tabs { width:100%; max-width:100%; min-width:0; flex:0 1 auto; display: flex; align-items: center; overflow-x: auto; overflow-y: hidden; padding: 6px 0; gap: 6px; border-bottom: 0; background: transparent; touch-action: pan-x; -webkit-overflow-scrolling: touch; scrollbar-width: none; -ms-overflow-style: none; cursor: grab; user-select: none; }
         .fm-playlist-tabs::-webkit-scrollbar { width: 0 !important; height: 0 !important; display: none !important; }
         .fm-playlist-tabs.dragging { cursor: grabbing; }
         .fm-tab { padding: 4px 12px; border-radius: var(--fm-radius-input); font-size: 11px; color: var(--fm-text-sub); background: transparent; border: 1px solid transparent; cursor: pointer; white-space: nowrap; transition: var(--fm-transition); user-select: none; }
@@ -584,7 +584,7 @@
         .fm-library-input .fm-add-btn { height:38px; }
         .fm-page-playlist { flex:0 0 auto; min-height:0; display:flex; flex-direction:column; gap:10px; }
         .fm-page-playlist .fm-list-section { min-height:150px; flex:0 0 auto; border:0; border-radius:0; overflow:visible; background:transparent; }
-        .fm-page-playlist .fm-playlist-tabs { flex:0 0 auto; }
+        .fm-page-playlist .fm-playlist-tabs { flex:0 0 auto;  min-width:0; max-width:100%; width:100%;}
         .fm-page-playlist .fm-playlist { min-height:0; overflow:visible; }
         .fm-settings-section { padding:8px 0; }
         .fm-settings-section-title { font-size:12px; font-weight:800; color:var(--fm-text-main); margin-bottom:12px; }
@@ -1159,15 +1159,25 @@
             savePlaylist();
             renderListUI();
 
-            // 创建后把新歌单滚到可见区域，避免 PC 端看不到。
+            // 创建后只滚动“歌单标签栏”本身。
+            // 不使用 scrollIntoView，避免浏览器把整个播放器页面/宿主页面一起横向滚动。
             requestAnimationFrame(() => {
                 const active = UI.playlistTabs.querySelector('.fm-tab.active');
-                if (active) {
-                    try {
-                        active.scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'center' });
-                    } catch (e) {
-                        active.scrollIntoView();
-                    }
+                if (!active) return;
+
+                const tabs = UI.playlistTabs;
+                const left = active.offsetLeft;
+                const right = left + active.offsetWidth;
+                const viewLeft = tabs.scrollLeft;
+                const viewRight = viewLeft + tabs.clientWidth;
+
+                if (left < viewLeft) {
+                    tabs.scrollLeft = Math.max(0, left - 8);
+                } else if (right > viewRight) {
+                    tabs.scrollLeft = Math.min(
+                        Math.max(0, tabs.scrollWidth - tabs.clientWidth),
+                        right - tabs.clientWidth + 8
+                    );
                 }
             });
         });
