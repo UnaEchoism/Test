@@ -307,7 +307,7 @@
         .theme-dark { --fm-bg: rgba(20, 20, 20, 0.9); --fm-text-main: #f0f0f0; --fm-text-sub: #888888; --fm-accent: #ffffff; --fm-border: rgba(255, 255, 255, 0.08); --fm-shadow: rgba(0, 0, 0, 0.4); }
         .theme-glass { --fm-bg: rgba(255, 255, 255, 0.1); --fm-text-main: #ffffff; --fm-text-sub: rgba(255,255,255,0.7); --fm-accent: var(--fm-custom-color, #ffffff); --fm-border: rgba(255, 255, 255, 0.2); --fm-shadow: rgba(0, 0, 0, 0.2); }
 
-        * { box-sizing: border-box; font-family: var(--fm-font); margin: 0; padding: 0; scrollbar-width: none; }
+        * { box-sizing: border-box; font-family: var(--fm-font); margin: 0; padding: 0; scrollbar-width: none; -ms-overflow-style: none; }
         *::-webkit-scrollbar { width: 0 !important; height: 0 !important; display: none !important; }
 
         .fm-ball {
@@ -376,13 +376,7 @@
         .fm-add-btn:hover { opacity: 0.8; }
         .fm-add-btn:disabled { opacity: 0.5; cursor: not-allowed; }
 
-        .fm-playlist-tabs {
-            display: flex; align-items: center; overflow-x: auto; overflow-y: hidden;
-            padding: 6px 0; gap: 6px; border-bottom: 0; background: transparent;
-            scrollbar-width: none; -ms-overflow-style: none;
-            touch-action: pan-x; -webkit-overflow-scrolling: touch;
-            cursor: grab; user-select: none;
-        }
+        .fm-playlist-tabs { display: flex; align-items: center; overflow-x: auto; overflow-y: hidden; padding: 6px 0; gap: 6px; border-bottom: 0; background: transparent; touch-action: pan-x; -webkit-overflow-scrolling: touch; scrollbar-width: none; -ms-overflow-style: none; cursor: grab; user-select: none; }
         .fm-playlist-tabs::-webkit-scrollbar { width: 0 !important; height: 0 !important; display: none !important; }
         .fm-playlist-tabs.dragging { cursor: grabbing; }
         .fm-tab { padding: 4px 12px; border-radius: var(--fm-radius-input); font-size: 11px; color: var(--fm-text-sub); background: transparent; border: 1px solid transparent; cursor: pointer; white-space: nowrap; transition: var(--fm-transition); user-select: none; }
@@ -555,8 +549,9 @@
         .fm-app-name { font-size:15px; font-weight:700; color:var(--fm-text-main); }
         .fm-app-sub { margin-top:2px; font-size:9px; letter-spacing:.16em; color:var(--fm-text-sub); }
         .fm-pages { flex:1 1 auto; min-height:0; overflow:hidden; position:relative; }
-        .fm-page { display:none; height:100%; min-height:0; overflow-y:auto; overflow-x:hidden; padding:8px 16px 18px; box-sizing:border-box; scrollbar-width:none; -ms-overflow-style:none; }
-        .fm-page::-webkit-scrollbar { width:0 !important; height:0 !important; display:none !important; }
+        .fm-page { display:none; height:100%; min-height:0; overflow-y:auto; overflow-x:hidden; padding:8px 16px 18px; box-sizing:border-box; scrollbar-width:thin; }
+        .fm-page::-webkit-scrollbar { width: 4px; }
+        .fm-page::-webkit-scrollbar-thumb { background: var(--fm-border); border-radius: 2px; }
         .fm-page.active { display:flex; flex-direction:column; gap:12px; }
         .fm-page.active > * { flex-shrink: 0; }
         .fm-section-kicker { font-size:9px; letter-spacing:.18em; color:var(--fm-accent); font-weight:800; margin-bottom:3px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
@@ -1140,129 +1135,158 @@
     function renderTabs() {
         UI.playlistTabs.innerHTML = '';
 
-        // 新建歌单按钮固定放在歌单栏最左侧，歌单再多也不用翻到最后。
+        // 新建歌单固定在最左侧，歌单再多也不用翻到最后。
         const addTab = targetDoc.createElement('div');
         addTab.className = 'fm-tab-add';
         addTab.innerHTML = '<i class="fas fa-plus"></i>';
-        addTab.title = "新建歌单";
-        addTab.setAttribute('aria-label', '新建歌单');
-        addTab.onclick = () => {
-            const name = prompt("请输入新歌单名称：", "新建歌单");
-            if (name && name.trim()) {
-                const newId = 'pl_' + Date.now();
-                STATE.playlists.push({ id: newId, name: name.trim(), tracks: [] });
-                STATE.currentPlaylistId = newId;
-                savePlaylist();
-                renderListUI();
-                // 新建后自动把新歌单滚入可视区域。
-                requestAnimationFrame(() => {
-                    const active = UI.playlistTabs.querySelector('.fm-tab.active');
-                    if (active) active.scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'center' });
-                });
-            }
-        };
+        addTab.title = '新建歌单';
+        addTab.setAttribute('role', 'button');
+        addTab.addEventListener('click', (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+
+            const name = targetWin.prompt('请输入新歌单名称：', '新建歌单');
+            if (!name || !name.trim()) return;
+
+            const newId = 'pl_' + Date.now() + '_' + Math.random().toString(36).slice(2, 7);
+            STATE.playlists.push({
+                id: newId,
+                name: name.trim(),
+                tracks: []
+            });
+            STATE.currentPlaylistId = newId;
+            STATE.isShowingSearch = false;
+            savePlaylist();
+            renderListUI();
+
+            // 创建后把新歌单滚到可见区域，避免 PC 端看不到。
+            requestAnimationFrame(() => {
+                const active = UI.playlistTabs.querySelector('.fm-tab.active');
+                if (active) {
+                    try {
+                        active.scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'center' });
+                    } catch (e) {
+                        active.scrollIntoView();
+                    }
+                }
+            });
+        });
         UI.playlistTabs.appendChild(addTab);
 
         STATE.playlists.forEach(p => {
             const tab = targetDoc.createElement('div');
             tab.className = `fm-tab ${p.id === STATE.currentPlaylistId ? 'active' : ''}`;
-            
+
             if (p.id === 'default') {
                 tab.textContent = p.name;
             } else {
-                tab.innerHTML = `<span>${escapeHTML(p.name)}</span><i class="fas fa-times fm-tab-del" title="删除歌单"></i>`;
-            }
-            
-            tab.onclick = (e) => {
-                if (e.target.classList.contains('fm-tab-del')) {
+                const nameSpan = targetDoc.createElement('span');
+                nameSpan.textContent = p.name;
+
+                const del = targetDoc.createElement('i');
+                del.className = 'fas fa-times fm-tab-del';
+                del.title = '删除歌单';
+                del.setAttribute('role', 'button');
+
+                // 删除按钮单独绑定，避免 PC 端横向拖拽/父级点击影响删除。
+                del.addEventListener('click', (e) => {
+                    e.preventDefault();
                     e.stopPropagation();
-                    if (confirm(`确定要删除歌单 [${p.name}] 吗？`)) {
-                        STATE.playlists = STATE.playlists.filter(list => list.id !== p.id);
-                        if (STATE.currentPlaylistId === p.id) STATE.currentPlaylistId = 'default';
-                        if (STATE.playingPlaylistId === p.id) {
-                            audio.pause();
-                            STATE.playingPlaylistId = 'default';
-                            STATE.currentIndex = -1;
-                        }
-                        savePlaylist();
-                        renderListUI();
+
+                    const confirmed = targetWin.confirm(`确定要删除歌单 [${p.name}] 吗？`);
+                    if (!confirmed) return;
+
+                    STATE.playlists = STATE.playlists.filter(list => list.id !== p.id);
+
+                    if (STATE.currentPlaylistId === p.id) {
+                        STATE.currentPlaylistId = 'default';
                     }
-                    return;
-                }
+
+                    if (STATE.playingPlaylistId === p.id) {
+                        audio.pause();
+                        STATE.playingPlaylistId = 'default';
+                        STATE.currentIndex = -1;
+                    }
+
+                    savePlaylist();
+                    renderListUI();
+                });
+
+                tab.appendChild(nameSpan);
+                tab.appendChild(del);
+            }
+
+            tab.addEventListener('click', (e) => {
+                if (e.target.closest('.fm-tab-del')) return;
+
                 STATE.currentPlaylistId = p.id;
                 STATE.isShowingSearch = false;
                 renderListUI();
-            };
+            });
+
             UI.playlistTabs.appendChild(tab);
         });
-
     }
 
-    // PC 端鼠标左右拖动歌单栏；手机端仍使用原生横向触摸滚动。
-    // 点击歌单/删除/新建时不误触发拖动。
+    // PC 端支持按住歌单栏空白处/标签拖动横向滚动。
+    // 关键点：只在真正发生横向移动后阻止默认行为，不拦截普通 click，
+    // 因此“切换歌单 / 删除 / 新建”不会被拖拽逻辑吞掉。
     function initPlaylistTabsDrag() {
         const tabs = UI.playlistTabs;
-        let dragging = false;
+        if (!tabs) return;
+
+        let isDragging = false;
         let moved = false;
         let startX = 0;
         let startScrollLeft = 0;
-        let suppressClick = false;
+        let pointerId = null;
 
         const onPointerDown = (e) => {
             if (e.pointerType === 'mouse' && e.button !== 0) return;
-            if (e.target.closest('.fm-tab, .fm-tab-add') && e.pointerType === 'mouse') {
-                // 鼠标也允许从按钮区域开始拖动；真正点击时由 click 处理。
-            }
-            dragging = true;
+            if (e.target.closest('.fm-tab-del, .fm-tab-add')) return;
+
+            isDragging = true;
             moved = false;
+            pointerId = e.pointerId;
             startX = e.clientX;
             startScrollLeft = tabs.scrollLeft;
             tabs.classList.add('dragging');
-            try { tabs.setPointerCapture(e.pointerId); } catch (_) {}
+
+            try { tabs.setPointerCapture(e.pointerId); } catch (err) {}
         };
 
         const onPointerMove = (e) => {
-            if (!dragging) return;
+            if (!isDragging || e.pointerId !== pointerId) return;
+
             const dx = e.clientX - startX;
             if (Math.abs(dx) > 4) moved = true;
+
             if (moved) {
-                tabs.scrollLeft = startScrollLeft - dx;
                 e.preventDefault();
+                tabs.scrollLeft = startScrollLeft - dx;
             }
         };
 
-        const onPointerUp = (e) => {
-            if (!dragging) return;
-            dragging = false;
+        const endDrag = (e) => {
+            if (!isDragging) return;
+            isDragging = false;
             tabs.classList.remove('dragging');
-            try { tabs.releasePointerCapture(e.pointerId); } catch (_) {}
-            if (moved) {
-                suppressClick = true;
-                setTimeout(() => { suppressClick = false; }, 80);
-            }
+            try { tabs.releasePointerCapture(pointerId); } catch (err) {}
+            pointerId = null;
         };
 
         tabs.addEventListener('pointerdown', onPointerDown);
         tabs.addEventListener('pointermove', onPointerMove, { passive: false });
-        tabs.addEventListener('pointerup', onPointerUp);
-        tabs.addEventListener('pointercancel', onPointerUp);
+        tabs.addEventListener('pointerup', endDrag);
+        tabs.addEventListener('pointercancel', endDrag);
 
-        // PC 鼠标滚轮也可横向切换歌单。
+        // PC 鼠标滚轮悬停在歌单栏时，也可转换为横向滚动。
         tabs.addEventListener('wheel', (e) => {
-            if (Math.abs(e.deltaY) > Math.abs(e.deltaX) && tabs.scrollWidth > tabs.clientWidth) {
-                tabs.scrollLeft += e.deltaY;
-                e.preventDefault();
-            }
+            if (Math.abs(e.deltaY) <= Math.abs(e.deltaX)) return;
+            if (tabs.scrollWidth <= tabs.clientWidth) return;
+            e.preventDefault();
+            tabs.scrollLeft += e.deltaY;
         }, { passive: false });
-
-        // 拖动后抑制一次 click，避免“拖到某处”误选歌单。
-        tabs.addEventListener('click', (e) => {
-            if (suppressClick) {
-                e.preventDefault();
-                e.stopPropagation();
-                suppressClick = false;
-            }
-        }, true);
     }
 
     // 事件发生在 Shadow DOM 内，监听 wrapper 比监听宿主 document 更可靠。
