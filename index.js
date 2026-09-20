@@ -50,10 +50,13 @@
         .map((p, i) => ({
             id: String(p.id || (i === 0 ? 'default' : `pl_${Date.now()}_${i}`)),
             name: String(p.name || (i === 0 ? '默认列表' : `歌单 ${i + 1}`)),
+            description: String(p.description || ''),
+            cover: typeof p.cover === 'string' ? p.cover : '',
+            color: /^#[0-9a-fA-F]{6}$/.test(String(p.color || '')) ? String(p.color) : '',
             tracks: Array.isArray(p.tracks) ? p.tracks.filter(Boolean) : []
         })) : [];
     if (!savedPlaylists.length || savedPlaylists[0].id !== 'default') {
-        savedPlaylists.unshift({ id: 'default', name: '默认列表', tracks: [] });
+        savedPlaylists.unshift({ id: 'default', name: '默认列表', description: '', cover: '', color: '', tracks: [] });
     }
 
     // 防卡死：严格去重与容量限制
@@ -147,6 +150,93 @@
 
     let audio = new targetWin.Audio();
     let lrcRafId = null;
+
+    const DEFAULT_PLAYLIST_COLORS = ['#4a90e2', '#9b59b6', '#e67e22', '#2ecc71', '#e74c3c', '#1abc9c'];
+    const getPlaylistColor = (playlist) => playlist?.color || savedSettings.customColor || '#4a90e2';
+    const renderPlaylistCover = (container, playlist, className = '') => {
+        if (!container) return;
+        container.replaceChildren();
+        if (playlist?.cover) {
+            const img = targetDoc.createElement('img');
+            img.src = playlist.cover;
+            img.alt = '';
+            img.draggable = false;
+            container.appendChild(img);
+        } else {
+            const icon = targetDoc.createElement('i');
+            icon.className = playlist?.id === 'default' ? 'fas fa-music' : 'fas fa-compact-disc';
+            container.appendChild(icon);
+        }
+        if (className) container.classList.add(className);
+    };
+
+    function editPlaylistName(playlist) {
+        const name = targetWin.prompt('请输入新的歌单名称：', playlist.name);
+        if (!name || !name.trim()) return;
+        playlist.name = name.trim().slice(0, 40);
+        savePlaylist();
+        renderListUI();
+        API.toast('歌单名称已更新');
+    }
+
+    function editPlaylistDescription(playlist) {
+        const desc = targetWin.prompt('请输入歌单简介（可留空）：', playlist.description || '');
+        if (desc === null) return;
+        playlist.description = desc.trim().slice(0, 160);
+        savePlaylist();
+        renderListUI();
+        API.toast('歌单简介已更新');
+    }
+
+    function editPlaylistColor(playlist) {
+        const input = targetDoc.createElement('input');
+        input.type = 'color';
+        input.value = getPlaylistColor(playlist);
+        input.style.position = 'fixed';
+        input.style.left = '-9999px';
+        input.style.top = '0';
+        input.style.opacity = '0';
+        targetDoc.body.appendChild(input);
+        input.onchange = () => {
+            playlist.color = input.value;
+            savePlaylist();
+            renderListUI();
+            API.toast('歌单颜色已更新');
+            input.remove();
+        };
+        input.onblur = () => setTimeout(() => input.remove(), 100);
+        input.click();
+    }
+
+    function editPlaylistCover(playlist) {
+        const input = targetDoc.createElement('input');
+        input.type = 'file';
+        input.accept = 'image/*';
+        input.style.display = 'none';
+        targetDoc.body.appendChild(input);
+        input.onchange = async () => {
+            const file = input.files?.[0];
+            if (!file) { input.remove(); return; }
+            try {
+                playlist.cover = await readSmallImage(file, 320);
+                savePlaylist();
+                renderListUI();
+                API.toast('歌单封面已更新');
+            } catch (err) {
+                API.toast(err?.message === 'TOO_LARGE' ? '图片原文件太大，请选择 8MB 以内的图片。' : '图片读取失败，请换一张图片重试。');
+            } finally {
+                input.remove();
+            }
+        };
+        input.click();
+    }
+
+    function clearPlaylistCover(playlist) {
+        playlist.cover = '';
+        savePlaylist();
+        renderListUI();
+        API.toast('已恢复默认歌单封面');
+    }
 
     // ================= API 封装 =================
     const API = {
@@ -376,23 +466,33 @@
         .fm-add-btn:hover { opacity: 0.8; }
         .fm-add-btn:disabled { opacity: 0.5; cursor: not-allowed; }
 
-        .fm-playlist-tabs { display: flex; flex-direction: column; gap: 6px; padding: 4px 0; background: transparent; overflow-y: auto; overflow-x: hidden; scrollbar-width: none; }
+        .fm-playlist-tabs { display: flex; flex-direction: column; gap: 7px; padding: 4px 0; background: transparent; overflow-y: auto; overflow-x: hidden; scrollbar-width: none; }
         .fm-playlist-tabs::-webkit-scrollbar { width: 0; height: 0; display: none; }
-        .fm-playlist-row { display: flex; align-items: center; gap: 10px; min-height: 46px; padding: 7px 10px; border: 1px solid transparent; border-radius: var(--fm-radius-input); background: rgba(255,255,255,0.025); color: var(--fm-text-main); cursor: pointer; transition: var(--fm-transition); user-select: none; box-sizing: border-box; }
-        .fm-playlist-row:hover { background: rgba(255,255,255,0.07); border-color: var(--fm-border); }
-        .fm-playlist-row-icon { width: 28px; height: 28px; flex: 0 0 28px; display: flex; align-items: center; justify-content: center; border-radius: 8px; background: rgba(0,210,255,0.1); color: var(--fm-accent); font-size: 12px; }
-        .fm-playlist-row-info { min-width: 0; flex: 1 1 auto; display: flex; flex-direction: column; gap: 2px; }
-        .fm-playlist-row-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; color: var(--fm-text-main); }
+        .fm-playlist-row { --playlist-color: var(--fm-accent); display: flex; align-items: center; gap: 10px; min-height: 58px; padding: 7px 8px; border: 1px solid transparent; border-left: 3px solid transparent; border-radius: var(--fm-radius-input); background: rgba(255,255,255,0.025); color: var(--fm-text-main); cursor: pointer; transition: var(--fm-transition); user-select: none; box-sizing: border-box; }
+        .fm-playlist-row:hover { background: rgba(255,255,255,0.07); border-color: var(--fm-border); border-left-color: var(--playlist-color); }
+        .fm-playlist-row-cover { width: 44px; height: 44px; flex: 0 0 44px; display: flex; align-items: center; justify-content: center; border-radius: 10px; background: color-mix(in srgb, var(--playlist-color) 18%, transparent); color: var(--playlist-color); overflow: hidden; font-size: 16px; }
+        .fm-playlist-row-cover img, .fm-playlist-hero-cover img { width: 100%; height: 100%; display: block; object-fit: cover; }
+        .fm-playlist-row-info { min-width: 0; flex: 1 1 auto; display: flex; flex-direction: column; gap: 3px; }
+        .fm-playlist-row-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; font-weight: 600; color: var(--fm-text-main); }
         .fm-playlist-row-count { font-size: 9px; color: var(--fm-text-sub); }
-        .fm-playlist-row-arrow { flex: 0 0 auto; color: var(--fm-text-sub); font-size: 10px; }
-        .fm-playlist-row-delete { flex: 0 0 28px; width: 28px; height: 28px; display: flex; align-items: center; justify-content: center; border: 0; background: transparent; color: var(--fm-text-sub); border-radius: 7px; cursor: pointer; }
-        .fm-playlist-row-delete:hover { color: #ff4d4f; background: rgba(255,77,79,0.1); }
+        .fm-playlist-row-manage, .fm-playlist-manage-btn { flex: 0 0 28px; width: 28px; height: 28px; display: flex; align-items: center; justify-content: center; border: 0; background: transparent; color: var(--fm-text-sub); border-radius: 8px; cursor: pointer; }
+        .fm-playlist-row-manage:hover, .fm-playlist-manage-btn:hover { color: var(--fm-text-main); background: rgba(255,255,255,0.08); }
         .fm-playlist-add-row { display: flex; align-items: center; justify-content: center; gap: 7px; min-height: 40px; padding: 7px 10px; margin-top: 2px; border: 1px dashed var(--fm-border); border-radius: var(--fm-radius-input); background: transparent; color: var(--fm-text-sub); cursor: pointer; font-size: 11px; transition: var(--fm-transition); box-sizing: border-box; }
         .fm-playlist-add-row:hover { color: var(--fm-accent); border-color: var(--fm-accent); background: rgba(0,210,255,0.05); }
-        .fm-playlist-detail-head { display: flex; align-items: center; gap: 8px; padding: 3px 0 8px; }
+        .fm-playlist-detail-head { display: flex; align-items: center; gap: 8px; padding: 3px 0 5px; }
         .fm-playlist-back { display: inline-flex; align-items: center; gap: 6px; padding: 5px 8px; border: 0; border-radius: 8px; background: transparent; color: var(--fm-text-sub); cursor: pointer; font-size: 11px; }
         .fm-playlist-back:hover { color: var(--fm-text-main); background: rgba(255,255,255,0.06); }
         .fm-playlist-detail-title { min-width: 0; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; font-weight: 700; color: var(--fm-text-main); }
+        .fm-playlist-hero { --playlist-color: var(--fm-accent); display: grid; grid-template-columns: 72px minmax(0,1fr) auto; align-items: center; gap: 12px; padding: 10px; margin: 0 0 7px; border-radius: 14px; border: 1px solid var(--fm-border); background: linear-gradient(135deg, color-mix(in srgb, var(--playlist-color) 16%, transparent), rgba(255,255,255,0.025)); overflow: hidden; }
+        .fm-playlist-hero-cover { width: 72px; height: 72px; border-radius: 12px; display: flex; align-items: center; justify-content: center; overflow: hidden; background: color-mix(in srgb, var(--playlist-color) 20%, transparent); color: var(--playlist-color); font-size: 25px; }
+        .fm-playlist-hero-info { min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+        .fm-playlist-hero-name { color: var(--fm-text-main); font-size: 15px; font-weight: 750; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+        .fm-playlist-hero-count { color: var(--playlist-color); font-size: 9px; font-weight: 700; }
+        .fm-playlist-hero-desc { color: var(--fm-text-sub); font-size: 10px; line-height: 1.45; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+        .fm-playlist-playall { display: inline-flex; align-items: center; gap: 6px; padding: 8px 10px; border: 0; border-radius: 10px; background: var(--playlist-color); color: #fff; cursor: pointer; font-size: 10px; font-weight: 700; white-space: nowrap; }
+        .fm-playlist-playall:hover { filter: brightness(1.08); transform: translateY(-1px); }
+        .fm-playlist-menu-item { display: flex; align-items: center; gap: 9px; }
+        .fm-playlist-menu-item i { width: 14px; text-align: center; opacity: .75; }
 
         /* 修复下拉菜单越界问题：移至顶层并使用 fixed 绝对定位 */
         .fm-pop-menu {
@@ -1144,28 +1244,67 @@
 
         if (!STATE.isPlaylistHome) {
             const current = getCurrentPlaylist();
+            const color = getPlaylistColor(current);
+
             const head = targetDoc.createElement('div');
             head.className = 'fm-playlist-detail-head';
-
             const back = targetDoc.createElement('button');
             back.className = 'fm-playlist-back';
             back.type = 'button';
             back.innerHTML = '<i class="fas fa-chevron-left"></i><span>歌单</span>';
             back.onclick = (e) => {
-                e.preventDefault();
-                e.stopPropagation();
+                e.preventDefault(); e.stopPropagation();
                 STATE.isPlaylistHome = true;
                 STATE.isShowingSearch = false;
                 renderListUI();
             };
-
             const title = targetDoc.createElement('div');
             title.className = 'fm-playlist-detail-title';
             title.textContent = current ? current.name : '歌单';
-
-            head.appendChild(back);
-            head.appendChild(title);
+            const manage = targetDoc.createElement('button');
+            manage.className = 'fm-playlist-manage-btn';
+            manage.type = 'button';
+            manage.title = '管理歌单';
+            manage.innerHTML = '<i class="fas fa-ellipsis-h"></i>';
+            manage.onclick = (e) => { e.preventDefault(); e.stopPropagation(); showPlaylistManageMenu(e, current); };
+            head.append(back, title, manage);
             UI.playlistTabs.appendChild(head);
+
+            if (current) {
+                const hero = targetDoc.createElement('div');
+                hero.className = 'fm-playlist-hero';
+                hero.style.setProperty('--playlist-color', color);
+
+                const cover = targetDoc.createElement('div');
+                cover.className = 'fm-playlist-hero-cover';
+                renderPlaylistCover(cover, current);
+
+                const info = targetDoc.createElement('div');
+                info.className = 'fm-playlist-hero-info';
+                const name = targetDoc.createElement('div');
+                name.className = 'fm-playlist-hero-name';
+                name.textContent = current.name;
+                const count = targetDoc.createElement('div');
+                count.className = 'fm-playlist-hero-count';
+                count.textContent = `${current.tracks.length} 首歌曲`;
+                const desc = targetDoc.createElement('div');
+                desc.className = 'fm-playlist-hero-desc';
+                desc.textContent = current.description || '还没有写歌单简介';
+                info.append(name, count, desc);
+
+                const playAll = targetDoc.createElement('button');
+                playAll.className = 'fm-playlist-playall';
+                playAll.type = 'button';
+                playAll.innerHTML = '<i class="fas fa-play"></i><span>播放全部</span>';
+                playAll.onclick = (e) => {
+                    e.preventDefault(); e.stopPropagation();
+                    if (!current.tracks.length) { API.toast('这个歌单还没有歌曲'); return; }
+                    playTrack(0, current.id);
+                };
+
+                hero.append(cover, info, playAll);
+                UI.playlistTabs.appendChild(hero);
+            }
             return;
         }
 
@@ -1176,14 +1315,16 @@
         UI.playlistTabs.appendChild(title);
 
         STATE.playlists.forEach(p => {
+            const color = getPlaylistColor(p);
             const row = targetDoc.createElement('div');
             row.className = 'fm-playlist-row';
             row.setAttribute('role', 'button');
             row.tabIndex = 0;
+            row.style.setProperty('--playlist-color', color);
 
-            const icon = targetDoc.createElement('div');
-            icon.className = 'fm-playlist-row-icon';
-            icon.innerHTML = p.id === 'default' ? '<i class="fas fa-music"></i>' : '<i class="fas fa-list"></i>';
+            const cover = targetDoc.createElement('div');
+            cover.className = 'fm-playlist-row-cover';
+            renderPlaylistCover(cover, p);
 
             const info = targetDoc.createElement('div');
             info.className = 'fm-playlist-row-info';
@@ -1192,41 +1333,17 @@
             name.textContent = p.name;
             const count = targetDoc.createElement('div');
             count.className = 'fm-playlist-row-count';
-            count.textContent = `${p.tracks.length} 首歌曲`;
-            info.appendChild(name);
-            info.appendChild(count);
+            count.textContent = `${p.tracks.length} 首歌曲${p.description ? ' · 有简介' : ''}`;
+            info.append(name, count);
 
-            row.appendChild(icon);
-            row.appendChild(info);
+            const manage = targetDoc.createElement('button');
+            manage.className = 'fm-playlist-row-manage';
+            manage.type = 'button';
+            manage.title = '管理歌单';
+            manage.innerHTML = '<i class="fas fa-ellipsis-v"></i>';
+            manage.onclick = (e) => { e.preventDefault(); e.stopPropagation(); showPlaylistManageMenu(e, p); };
 
-            if (p.id !== 'default') {
-                const del = targetDoc.createElement('button');
-                del.className = 'fm-playlist-row-delete';
-                del.type = 'button';
-                del.title = '删除歌单';
-                del.innerHTML = '<i class="fas fa-trash-alt"></i>';
-                del.onclick = (e) => {
-                    e.preventDefault();
-                    e.stopPropagation();
-                    if (!targetWin.confirm(`确定要删除歌单 [${p.name}] 吗？`)) return;
-                    STATE.playlists = STATE.playlists.filter(list => list.id !== p.id);
-                    if (STATE.currentPlaylistId === p.id) STATE.currentPlaylistId = 'default';
-                    if (STATE.playingPlaylistId === p.id) {
-                        audio.pause();
-                        STATE.playingPlaylistId = 'default';
-                        STATE.currentIndex = -1;
-                    }
-                    savePlaylist();
-                    renderListUI();
-                };
-                row.appendChild(del);
-            } else {
-                const arrow = targetDoc.createElement('div');
-                arrow.className = 'fm-playlist-row-arrow';
-                arrow.innerHTML = '<i class="fas fa-chevron-right"></i>';
-                row.appendChild(arrow);
-            }
-
+            row.append(cover, info, manage);
             const open = () => {
                 STATE.currentPlaylistId = p.id;
                 STATE.isShowingSearch = false;
@@ -1235,10 +1352,7 @@
             };
             row.addEventListener('click', open);
             row.addEventListener('keydown', (e) => {
-                if (e.key === 'Enter' || e.key === ' ') {
-                    e.preventDefault();
-                    open();
-                }
+                if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); open(); }
             });
             UI.playlistTabs.appendChild(row);
         });
@@ -1248,12 +1362,11 @@
         addRow.setAttribute('role', 'button');
         addRow.innerHTML = '<i class="fas fa-plus"></i><span>新建歌单</span>';
         addRow.onclick = (e) => {
-            e.preventDefault();
-            e.stopPropagation();
+            e.preventDefault(); e.stopPropagation();
             const name = targetWin.prompt('请输入新歌单名称：', '新建歌单');
             if (!name || !name.trim()) return;
             const newId = 'pl_' + Date.now() + '_' + Math.random().toString(36).slice(2, 7);
-            STATE.playlists.push({ id: newId, name: name.trim(), tracks: [] });
+            STATE.playlists.push({ id: newId, name: name.trim(), description: '', cover: '', color: DEFAULT_PLAYLIST_COLORS[STATE.playlists.length % DEFAULT_PLAYLIST_COLORS.length], tracks: [] });
             STATE.currentPlaylistId = newId;
             STATE.isShowingSearch = false;
             STATE.isPlaylistHome = false;
@@ -1261,6 +1374,47 @@
             renderListUI();
         };
         UI.playlistTabs.appendChild(addRow);
+    }
+
+    function showPlaylistManageMenu(e, playlist) {
+        if (!playlist) return;
+        e.stopPropagation();
+        UI.popMenu.innerHTML = '';
+        const items = [
+            ['fas fa-pen', '重命名', () => editPlaylistName(playlist)],
+            ['fas fa-align-left', '编辑简介', () => editPlaylistDescription(playlist)],
+            ['fas fa-image', '更换封面', () => editPlaylistCover(playlist)],
+            ['fas fa-palette', '更换颜色', () => editPlaylistColor(playlist)]
+        ];
+        if (playlist.cover) items.push(['fas fa-trash-alt', '恢复默认封面', () => clearPlaylistCover(playlist)]);
+        if (playlist.id !== 'default') items.push(['fas fa-times', '删除歌单', () => {
+            if (!targetWin.confirm(`确定要删除歌单 [${playlist.name}] 吗？`)) return;
+            STATE.playlists = STATE.playlists.filter(list => list.id !== playlist.id);
+            if (STATE.currentPlaylistId === playlist.id) STATE.currentPlaylistId = 'default';
+            if (STATE.playingPlaylistId === playlist.id) {
+                audio.pause(); STATE.playingPlaylistId = 'default'; STATE.currentIndex = -1;
+            }
+            STATE.isPlaylistHome = true;
+            savePlaylist(); renderListUI();
+        }]);
+        items.forEach(([icon, label, action]) => {
+            const item = targetDoc.createElement('div');
+            item.className = 'fm-pop-item fm-playlist-menu-item';
+            item.innerHTML = `<i class="${icon}"></i><span>${label}</span>`;
+            item.onclick = () => { UI.popMenu.classList.remove('show'); action(); };
+            UI.popMenu.appendChild(item);
+        });
+        const rect = e.currentTarget?.getBoundingClientRect?.() || e.target.getBoundingClientRect();
+        const estimatedMenuHeight = items.length * 34 + 10;
+        const menuWidth = 150;
+        let top = rect.bottom + 4;
+        if (top + estimatedMenuHeight > targetWin.innerHeight - 10) top = rect.top - estimatedMenuHeight - 4;
+        let left = rect.right - menuWidth;
+        left = Math.max(10, Math.min(left, targetWin.innerWidth - menuWidth - 10));
+        top = Math.max(10, Math.min(top, targetWin.innerHeight - estimatedMenuHeight - 10));
+        UI.popMenu.style.top = `${top}px`;
+        UI.popMenu.style.left = `${left}px`;
+        UI.popMenu.classList.add('show');
     }
 
     // 事件发生在 Shadow DOM 内，监听 wrapper 比监听宿主 document 更可靠。
@@ -1432,6 +1586,7 @@
         } else {
             const currentListObj = getCurrentPlaylist();
             const currentTracks = currentListObj.tracks;
+            UI.playlistEl.style.setProperty('--playlist-color', getPlaylistColor(currentListObj));
 
             if (currentTracks.length === 0) {
                 UI.playlistEl.innerHTML = '<div style="padding:16px;text-align:center;color:var(--fm-text-sub);font-size:12px;">列表为空，请导入或搜索</div>';
