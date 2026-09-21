@@ -562,32 +562,12 @@
             filter: blur(var(--fm-bg-blur, 0px)) brightness(var(--fm-bg-brightness, 100%));
         }
 
-        /* 桌面歌词字体选择器 */
-        .fm-lrc-font-row { display:flex; align-items:center; justify-content:space-between; gap:10px; }
+        /* 桌面歌词字体下拉选择器：使用原生 select，避免 WebView 弹层透明/遮挡问题 */
+        .fm-lrc-font-row { display:flex; align-items:center; gap:10px; }
         .fm-lrc-font-current { min-width:0; flex:1; color:var(--fm-text-sub); font-size:12px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-        .fm-lrc-font-btn { flex:0 0 auto; border:1px solid var(--fm-border); background:var(--fm-panel); color:var(--fm-text-main); border-radius:var(--fm-radius-input); padding:6px 10px; cursor:pointer; font-size:12px; }
-        .fm-lrc-font-btn:hover { border-color:var(--fm-accent); color:var(--fm-accent); }
-        .fm-font-modal-backdrop { position:fixed; inset:0; z-index:2147483646; background:rgba(0,0,0,.42); display:none; align-items:center; justify-content:center; padding:14px; }
-        .fm-font-modal-backdrop.show { display:flex; }
-        .fm-font-modal { width:min(460px,92vw); max-height:min(620px,88vh); display:flex; flex-direction:column; overflow:hidden; background:var(--fm-panel); color:var(--fm-text-main); border:1px solid var(--fm-border); border-radius:var(--fm-radius-panel); box-shadow:0 18px 60px rgba(0,0,0,.28); }
-        .fm-font-modal-head { display:flex; align-items:center; justify-content:space-between; gap:10px; padding:14px 16px 10px; border-bottom:1px solid var(--fm-border); }
-        .fm-font-modal-title { font-size:15px; font-weight:700; }
-        .fm-font-modal-close { border:0; background:transparent; color:var(--fm-text-sub); cursor:pointer; font-size:17px; padding:3px 5px; }
-        .fm-font-search { margin:10px 12px 8px; width:calc(100% - 24px); border:1px solid var(--fm-border); background:var(--fm-input-bg,rgba(127,127,127,.08)); color:var(--fm-text-main); border-radius:var(--fm-radius-input); padding:8px 10px; outline:none; }
-        .fm-font-search:focus { border-color:var(--fm-accent); }
-        .fm-font-list { flex:1; min-height:120px; overflow:auto; padding:2px 8px 8px; scrollbar-width:none; }
-        .fm-font-list::-webkit-scrollbar { display:none; width:0; height:0; }
-        .fm-font-item { width:100%; display:flex; align-items:center; gap:10px; border:0; border-radius:10px; background:transparent; color:var(--fm-text-main); padding:10px 9px; text-align:left; cursor:pointer; transition:background .15s, color .15s; }
-        .fm-font-item:hover { background:var(--fm-border); }
-        .fm-font-item:disabled { opacity:.62; cursor:wait; }
-        .fm-font-item.active { background:color-mix(in srgb, var(--fm-accent) 14%, transparent); }
-        .fm-font-preview { flex:1; min-width:0; font-size:16px; line-height:1.45; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-        .fm-font-meta { flex:0 0 auto; font-family:var(--fm-font); font-size:10px; color:var(--fm-text-sub); }
-        .fm-font-check { width:16px; flex:0 0 16px; color:var(--fm-accent); text-align:center; }
-        .fm-font-empty { padding:26px 10px; text-align:center; color:var(--fm-text-sub); font-size:12px; }
-        .fm-font-modal-foot { display:flex; justify-content:flex-end; gap:8px; padding:10px 12px; border-top:1px solid var(--fm-border); }
-        .fm-font-modal-foot button { border:1px solid var(--fm-border); background:transparent; color:var(--fm-text-main); border-radius:var(--fm-radius-input); padding:7px 13px; cursor:pointer; }
-        .fm-font-modal-foot .primary { background:var(--fm-accent); color:#fff; border-color:var(--fm-accent); }
+        .fm-lrc-font-select { flex:0 1 190px; min-width:120px; max-width:55%; border:1px solid var(--fm-border); background:var(--fm-panel); color:var(--fm-text-main); border-radius:var(--fm-radius-input); padding:7px 30px 7px 10px; font-size:12px; cursor:pointer; outline:none; }
+        .fm-lrc-font-select:focus { border-color:var(--fm-accent); }
+        .fm-lrc-font-select option { background:var(--fm-panel); color:var(--fm-text-main); }
 
         .fm-out-lyrics {
             position: absolute;
@@ -895,8 +875,9 @@
                                 </div>
                                 <div class="fm-lrc-settings-row fm-lrc-font-row">
                                     <span class="fm-lrc-settings-label">字体</span>
-                                    <span class="fm-lrc-font-current" id="fm-lrc-font-current">默认字体</span>
-                                    <button class="fm-lrc-font-btn" id="fm-lrc-font-btn" type="button">选择字体</button>
+                                    <select class="fm-lrc-font-select" id="fm-lrc-font-select" aria-label="桌面歌词字体">
+                                        <option value="">默认字体</option>
+                                    </select>
                                 </div>
                             </div>
                         </div>
@@ -952,20 +933,6 @@
             </nav>
         </div>
 
-        <div class="fm-font-modal-backdrop" id="fm-font-modal-backdrop">
-            <div class="fm-font-modal" role="dialog" aria-modal="true" aria-label="歌词字体">
-                <div class="fm-font-modal-head">
-                    <div class="fm-font-modal-title">桌面歌词字体</div>
-                    <button class="fm-font-modal-close" id="fm-font-modal-close" type="button">×</button>
-                </div>
-                <input class="fm-font-search" id="fm-font-search" type="search" placeholder="搜索字体名称…" autocomplete="off">
-                <div class="fm-font-list" id="fm-font-list"></div>
-                <div class="fm-font-modal-foot">
-                    <button id="fm-font-modal-cancel" type="button">取消</button>
-                    <button id="fm-font-modal-confirm" class="primary" type="button">使用此字体</button>
-                </div>
-            </div>
-        </div>
 
         <div class="fm-pop-menu" id="fm-pop-menu"></div>
         <div class="fm-out-lyrics show" id="fm-out-lyrics"></div>
@@ -1000,14 +967,8 @@
         lrcModeFallBtn: wrapper.querySelector('#fm-lrc-mode-fall'),
         lrcFontSlider: wrapper.querySelector('#fm-lrc-font-slider'),
         lrcBottomSlider: wrapper.querySelector('#fm-lrc-bottom-slider'),
-        lrcFontCurrent: wrapper.querySelector('#fm-lrc-font-current'),
-        lrcFontBtn: wrapper.querySelector('#fm-lrc-font-btn'),
-        fontModalBackdrop: wrapper.querySelector('#fm-font-modal-backdrop'),
-        fontModalClose: wrapper.querySelector('#fm-font-modal-close'),
-        fontSearch: wrapper.querySelector('#fm-font-search'),
-        fontList: wrapper.querySelector('#fm-font-list'),
-        fontModalCancel: wrapper.querySelector('#fm-font-modal-cancel'),
-        fontModalConfirm: wrapper.querySelector('#fm-font-modal-confirm'),
+        lrcFontCurrent: wrapper.querySelector('#fm-lrc-font-select'),
+        lrcFontSelect: wrapper.querySelector('#fm-lrc-font-select'),
         outLyricsScroll: wrapper.querySelector('#fm-out-lyrics-scroll'),
         outLyricsScrollList: wrapper.querySelector('#fm-lrc-scroll-list'),
         sourceSelect: wrapper.querySelector('#fm-source-select'),
@@ -1115,9 +1076,6 @@
         return promise;
     };
 
-    let pendingLrcFont = null;
-    let lrcFontModalOriginal = null;
-    let fontPreviewToken = 0;
 
     const setLrcFontVisual = (font) => {
         const family = font?.family || '';
@@ -1125,7 +1083,10 @@
         UI.wrapper.style.setProperty('--fm-lrc-family', safeFamily || 'inherit');
         if (UI.outLyrics) UI.outLyrics.style.fontFamily = safeFamily;
         if (UI.outLyricsScroll) UI.outLyricsScroll.style.fontFamily = safeFamily;
-        if (UI.lrcFontCurrent) UI.lrcFontCurrent.textContent = font?.name || '默认字体';
+        if (UI.lrcFontCurrent) {
+            UI.lrcFontCurrent.value = font?.name || '';
+            UI.lrcFontCurrent.style.fontFamily = safeFamily || '';
+        }
     };
 
     const applyLrcFont = (font, persist = true) => {
@@ -1140,92 +1101,44 @@
 
     const findSavedLrcFont = () => ZEOSEVEN_FONTS.find(f => f.name === savedSettings.lrcFontName || f.family === savedSettings.lrcFontFamily) || null;
 
-    const renderFontList = () => {
-        const q = (UI.fontSearch?.value || '').trim().toLowerCase();
-        const list = ZEOSEVEN_FONTS.filter(f => !q || f.name.toLowerCase().includes(q) || f.family.toLowerCase().includes(q));
+    const populateLrcFontSelect = () => {
+        if (!UI.lrcFontSelect) return;
         const frag = targetDoc.createDocumentFragment();
-
-        if (!list.length) {
-            const empty = targetDoc.createElement('div');
-            empty.className = 'fm-font-empty';
-            empty.textContent = '没有找到匹配的字体';
-            frag.appendChild(empty);
-        } else {
-            list.forEach(font => {
-                const item = targetDoc.createElement('button');
-                item.type = 'button';
-                item.className = 'fm-font-item';
-                const active = pendingLrcFont?.family === font.family;
-                if (active) item.classList.add('active');
-
-                // 默认只显示字体名称，不主动触发远程字体加载。
-                // 已经加载过的字体才使用真实字体做名称预览。
-                const preview = targetDoc.createElement('span');
-                preview.className = 'fm-font-preview';
-                preview.textContent = font.name;
-                if (loadedFontCss.has(font.css)) preview.style.fontFamily = `"${font.family.replace(/"/g,'\\"')}"`;
-
-                const meta = targetDoc.createElement('span');
-                meta.className = 'fm-font-meta';
-                meta.textContent = loadedFontCss.has(font.css) ? '已加载' : '点击预览';
-
-                const check = targetDoc.createElement('span');
-                check.className = 'fm-font-check';
-                check.innerHTML = active ? '<i class="fas fa-check"></i>' : '';
-
-                item.append(preview, meta, check);
-                item.addEventListener('click', async (e) => {
-                    e.preventDefault();
-                    e.stopPropagation();
-                    if (item.disabled) return;
-                    item.disabled = true;
-                    const token = ++fontPreviewToken;
-                    meta.textContent = '加载中…';
-
-                    const ok = await ensureZeoFontLoaded(font);
-                    if (token !== fontPreviewToken) return;
-
-                    if (!ok) {
-                        item.disabled = false;
-                        meta.textContent = '加载失败';
-                        API.toast('字体加载失败，请检查网络后重试');
-                        return;
-                    }
-
-                    pendingLrcFont = font;
-                    applyLrcFont(font, false); // 立即预览，但不保存
-                    item.disabled = false;
-                    renderFontList();
-                });
-                frag.appendChild(item);
-            });
-        }
-
-        UI.fontList.replaceChildren(frag);
-    };
-
-    const closeLrcFontModal = (restore = false) => {
-        ++fontPreviewToken;
-        if (restore) {
-            if (lrcFontModalOriginal) applyLrcFont(lrcFontModalOriginal, false);
-            else applyLrcFont(null, false);
-        }
-        UI.fontModalBackdrop.classList.remove('show');
-        pendingLrcFont = null;
-        lrcFontModalOriginal = null;
-    };
-
-    const openLrcFontModal = () => {
-        lrcFontModalOriginal = findSavedLrcFont();
-        pendingLrcFont = lrcFontModalOriginal;
-        fontPreviewToken++;
-        UI.fontSearch.value = '';
-        renderFontList();
-        UI.fontModalBackdrop.classList.add('show');
-        requestAnimationFrame(() => {
-            try { UI.fontSearch.focus({ preventScroll: true }); } catch (_) { UI.fontSearch.focus(); }
+        ZEOSEVEN_FONTS.forEach(font => {
+            const option = targetDoc.createElement('option');
+            option.value = font.name;
+            option.textContent = font.name;
+            option.dataset.family = font.family;
+            option.dataset.css = font.css;
+            frag.appendChild(option);
         });
+        UI.lrcFontSelect.appendChild(frag);
     };
+
+    const previewLrcFontFromSelect = async (font) => {
+        if (!font) {
+            applyLrcFont(null, true);
+            return;
+        }
+        const select = UI.lrcFontSelect;
+        if (select) select.disabled = true;
+        const ok = await ensureZeoFontLoaded(font);
+        if (ok) {
+            // 选中即预览并保存；使用原生下拉后不再需要额外确认弹层。
+            applyLrcFont(font, true);
+            if (select) select.style.fontFamily = `"${font.family.replace(/"/g,'\"')}"`;
+        } else {
+            API.toast('字体加载失败，请检查网络后重试');
+            const saved = findSavedLrcFont();
+            if (select) {
+                select.value = saved?.name || '';
+                select.style.fontFamily = saved?.family ? `"${saved.family.replace(/"/g,'\"')}"` : '';
+            }
+        }
+        if (select) select.disabled = false;
+    };
+
+    populateLrcFontSelect();
 
     // ================= 页面导航 =================
     UI.themeDots.forEach(dot => dot.classList.toggle('active', dot.dataset.theme === STATE.currentTheme));
@@ -2482,19 +2395,11 @@
         }
     };
 
-    UI.lrcFontBtn.onclick = () => openLrcFontModal();
-    UI.fontModalClose.onclick = () => closeLrcFontModal(true);
-    UI.fontModalCancel.onclick = () => closeLrcFontModal(true);
-    UI.fontModalConfirm.onclick = () => {
-        if (pendingLrcFont) {
-            applyLrcFont(pendingLrcFont, true);
-            API.toast(`桌面歌词字体已切换为「${pendingLrcFont.name}」`);
-        }
-        closeLrcFontModal(false);
+    UI.lrcFontSelect.onchange = async () => {
+        const name = UI.lrcFontSelect.value;
+        const font = ZEOSEVEN_FONTS.find(f => f.name === name) || null;
+        await previewLrcFontFromSelect(font);
     };
-    UI.fontSearch.oninput = () => renderFontList();
-    UI.fontModalBackdrop.onclick = (e) => { if (e.target === UI.fontModalBackdrop) closeLrcFontModal(true); };
-    UI.fontModalBackdrop.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeLrcFontModal(true); });
 
     const THEME_DEFAULT_COLORS = {
         adaptive: '', // 自适应主题不强制设色，跟随宿主环境
@@ -2657,7 +2562,10 @@
         UI.wrapper.style.setProperty('--fm-lrc-bottom', `${savedSettings.lrcBottom}px`);
         const savedLrcFont = findSavedLrcFont();
         if (savedLrcFont) {
-            ensureZeoFontLoaded(savedLrcFont).then(() => applyLrcFont(savedLrcFont, false));
+            if (UI.lrcFontSelect) UI.lrcFontSelect.value = savedLrcFont.name;
+            ensureZeoFontLoaded(savedLrcFont).then((ok) => {
+                if (ok) applyLrcFont(savedLrcFont, false);
+            });
         } else {
             applyLrcFont(null, false);
         }
