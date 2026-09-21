@@ -152,6 +152,7 @@
 
     let audio = new targetWin.Audio();
     let lrcRafId = null;
+    let lrcTimerId = null;
 
     const DEFAULT_PLAYLIST_COLORS = ['#4a90e2', '#9b59b6', '#e67e22', '#2ecc71', '#e74c3c', '#1abc9c'];
     const getPlaylistColor = (playlist) => playlist?.color || savedSettings.customColor || '#4a90e2';
@@ -2148,6 +2149,7 @@
         audio.pause(); audio.src = '';
         STATE.lyricsData = []; UI.outLyrics.innerHTML = ''; UI.outLyricsScrollList.innerHTML = ''; STATE.lastActiveLrcIndex = -1;
         if (lrcRafId) cancelAnimationFrame(lrcRafId);
+        stopLyricsTimer();
         updateProgressUI(0, 0);
 
         if (!track.url) {
@@ -2204,7 +2206,8 @@
                     parseLyric(lrcData.lyric, lrcData.tlyric);
                     buildScrollLyricsDom(); 
                     if (lrcRafId) cancelAnimationFrame(lrcRafId);
-                    if (STATE.isLyricsVisible && !audio.paused) updateLyrics();
+                    stopLyricsTimer();
+                    if (STATE.isLyricsVisible && !audio.paused) { updateLyrics(); scheduleLyricsUpdate(); }
                 }
             }
         } else {
@@ -2303,9 +2306,11 @@
         // 随机掉落模式下，提前 0.8 秒触发下一句，实现交叠效果
         const effectiveTime = ct + (isFallMode ? 0.8 : 0);
         
-        let activeIdx = -1;
-        for (let i = STATE.lyricsData.length - 1; i >= 0; i--) {
-            if (effectiveTime >= STATE.lyricsData[i].time) { activeIdx = i; break; }
+        let lo = 0, hi = STATE.lyricsData.length - 1, activeIdx = -1;
+        while (lo <= hi) {
+            const mid = (lo + hi) >> 1;
+            if (effectiveTime >= STATE.lyricsData[mid].time) { activeIdx = mid; lo = mid + 1; }
+            else hi = mid - 1;
         }
 
         if (activeIdx !== -1 && activeIdx !== STATE.lastActiveLrcIndex) {
@@ -2464,6 +2469,34 @@
         lrcRafId = null;
     }
 
+    function stopLyricsTimer() {
+        if (lrcTimerId) { clearTimeout(lrcTimerId); lrcTimerId = null; }
+    }
+
+    function scheduleLyricsUpdate() {
+        stopLyricsTimer();
+        if (!STATE.isLyricsVisible || audio.paused || STATE.lyricsData.length === 0) return;
+        const ct = audio.currentTime;
+        const offset = savedSettings.lrcMode === 'fall' ? 0.8 : 0;
+        const effectiveTime = ct + offset;
+        let lo = 0, hi = STATE.lyricsData.length - 1, activeIdx = -1;
+        while (lo <= hi) {
+            const mid = (lo + hi) >> 1;
+            if (effectiveTime >= STATE.lyricsData[mid].time) { activeIdx = mid; lo = mid + 1; }
+            else hi = mid - 1;
+        }
+        const nextIdx = activeIdx + 1;
+        if (nextIdx >= STATE.lyricsData.length) return;
+        const nextAt = STATE.lyricsData[nextIdx].time - offset;
+        const delay = Math.max(20, (nextAt - ct) * 1000);
+        lrcTimerId = setTimeout(() => {
+            lrcTimerId = null;
+            if (!STATE.isLyricsVisible || audio.paused) return;
+            updateLyrics();
+            scheduleLyricsUpdate();
+        }, delay);
+    }
+
     // ================= 事件绑定 =================
     
     UI.closeBtn.onclick = togglePanel;
@@ -2508,6 +2541,7 @@
         } else if (!audio.paused) {
             STATE.lastActiveLrcIndex = -1;
             updateLyrics();
+            scheduleLyricsUpdate();
         }
     };
 
@@ -2522,7 +2556,7 @@
         STATE.lastActiveLrcIndex = -1;
         if (lrcRafId) { cancelAnimationFrame(lrcRafId); lrcRafId = null; }
         syncLyricsVisibility();
-        if (STATE.isLyricsVisible && !audio.paused) updateLyrics();
+        if (STATE.isLyricsVisible && !audio.paused) { updateLyrics(); scheduleLyricsUpdate(); }
         applySettings();
     };
 
@@ -2532,7 +2566,7 @@
         updateLrcModeBtns();
         STATE.lastActiveLrcIndex = -1;
         syncLyricsVisibility();
-        if (STATE.isLyricsVisible && !audio.paused) updateLyrics();
+        if (STATE.isLyricsVisible && !audio.paused) { updateLyrics(); scheduleLyricsUpdate(); }
         applySettings();
     };
     UI.lrcModeScrollBtn.onclick = () => {
@@ -2542,7 +2576,7 @@
         STATE.lastActiveLrcIndex = -1;
         syncLyricsVisibility();
         if (STATE.lyricsData.length > 0) buildScrollLyricsDom();
-        if (STATE.isLyricsVisible && !audio.paused) updateLyrics();
+        if (STATE.isLyricsVisible && !audio.paused) { updateLyrics(); scheduleLyricsUpdate(); }
         applySettings();
     };
     UI.lrcModeFallBtn.onclick = () => {
@@ -2551,7 +2585,7 @@
         updateLrcModeBtns();
         STATE.lastActiveLrcIndex = -1;
         syncLyricsVisibility();
-        if (STATE.isLyricsVisible && !audio.paused) updateLyrics();
+        if (STATE.isLyricsVisible && !audio.paused) { updateLyrics(); scheduleLyricsUpdate(); }
         applySettings();
     };
 
@@ -2994,13 +3028,16 @@
         UI.playBtn.innerHTML = '<i class="fas fa-pause"></i>';
         UI.ball.classList.add('playing');
         if (lrcRafId) cancelAnimationFrame(lrcRafId);
+        stopLyricsTimer();
         updateLyrics();
+        scheduleLyricsUpdate();
     };
     audio.onpause = () => {
         STATE.isPlaying = false;
         UI.playBtn.innerHTML = '<i class="fas fa-play"></i>';
         UI.ball.classList.remove('playing');
         if (lrcRafId) cancelAnimationFrame(lrcRafId);
+        stopLyricsTimer();
     };
     audio.onended = () => {
         if (STATE.playMode === 'repeat_one') { audio.currentTime = 0; audio.play(); }
@@ -3012,7 +3049,6 @@
         if (STATE.isExpanded && !STATE.isSeekingProgress) {
             updateProgressUI(audio.currentTime, audio.duration);
         }
-        if (STATE.isLyricsVisible) updateLyrics();
     };
     audio.onloadedmetadata = () => { if (!STATE.isSeekingProgress) updateProgressUI(audio.currentTime, audio.duration); };
     audio.onerror = () => {
@@ -3102,6 +3138,7 @@
     targetWin.addEventListener('pagehide', () => {
         if (audio) { audio.pause(); audio.src = ''; audio = null; }
         if (lrcRafId) cancelAnimationFrame(lrcRafId);
+        stopLyricsTimer();
         saveSettings();
         clearTimeout(settingsSaveTimer);
         const c = targetDoc.getElementById(CONFIG.ID);
