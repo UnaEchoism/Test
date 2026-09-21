@@ -579,6 +579,7 @@
         .fm-font-list::-webkit-scrollbar { display:none; width:0; height:0; }
         .fm-font-item { width:100%; display:flex; align-items:center; gap:10px; border:0; border-radius:10px; background:transparent; color:var(--fm-text-main); padding:10px 9px; text-align:left; cursor:pointer; transition:background .15s, color .15s; }
         .fm-font-item:hover { background:var(--fm-border); }
+        .fm-font-item:disabled { opacity:.62; cursor:wait; }
         .fm-font-item.active { background:color-mix(in srgb, var(--fm-accent) 14%, transparent); }
         .fm-font-preview { flex:1; min-width:0; font-size:16px; line-height:1.45; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
         .fm-font-meta { flex:0 0 auto; font-family:var(--fm-font); font-size:10px; color:var(--fm-text-sub); }
@@ -1035,7 +1036,8 @@
     };
 
     // ================= 桌面歌词字体 =================
-    // 首版选择器先收录一组 ZeoSeven 常用字体，搜索与预览逻辑独立，后续可扩充完整目录。
+    // 安全版：打开选择器时绝不加载远程字体；只有用户点击某个字体后才按需加载。
+    // 这样可以避免 Tauri/WebView 在打开选择器时同时处理大量远程字体资源而卡住界面。
     const ZEOSEVEN_FONTS = [
         { name:'霞鹜文楷', family:'LXGW WenKai', css:'https://fontsapi.zeoseven.com/292/main/result.css' },
         { name:'霞鹜臻楷', family:'LXGW ZhenKai GB', css:'https://fontsapi.zeoseven.com/2/main/result.css' },
@@ -1058,75 +1060,171 @@
         { name:'Y 式宋体', family:'YShiMincho CL', css:'https://fontsapi.zeoseven.com/524/main/result.css' },
         { name:'朝华标题', family:'ZhaohuaMinA', css:'https://fontsapi.zeoseven.com/2101/main/result.css' }
     ];
+
     const loadedFontCss = new Set();
-    const ensureZeoFontLoaded = (font) => new Promise((resolve) => {
-        if (!font?.css) return resolve(false);
-        if (loadedFontCss.has(font.css)) return resolve(true);
-        const id = 'fm-zeofont-' + btoa(unescape(encodeURIComponent(font.css))).replace(/[^a-zA-Z0-9]/g,'').slice(-28);
-        if (targetDoc.getElementById(id)) { loadedFontCss.add(font.css); return resolve(true); }
-        const link = targetDoc.createElement('link');
-        link.id = id; link.rel = 'stylesheet'; link.href = font.css; link.crossOrigin = 'anonymous';
-        let done = false;
-        const finish = (ok) => { if (done) return; done = true; if (ok) loadedFontCss.add(font.css); resolve(ok); };
-        link.onload = () => finish(true); link.onerror = () => finish(false);
-        (targetDoc.head || targetDoc.documentElement).appendChild(link);
-        setTimeout(() => finish(!!targetDoc.getElementById(id)), 8000);
-    });
+    const loadingFontCss = new Map();
+
+    const ensureZeoFontLoaded = (font) => {
+        if (!font?.css || !font?.family) return Promise.resolve(false);
+        if (loadedFontCss.has(font.css)) return Promise.resolve(true);
+        if (loadingFontCss.has(font.css)) return loadingFontCss.get(font.css);
+
+        const promise = new Promise((resolve) => {
+            let settled = false;
+            const finish = (ok) => {
+                if (settled) return;
+                settled = true;
+                clearTimeout(timer);
+                if (ok) loadedFontCss.add(font.css);
+                loadingFontCss.delete(font.css);
+                resolve(ok);
+            };
+
+            const id = 'fm-zeofont-' + btoa(unescape(encodeURIComponent(font.css))).replace(/[^a-zA-Z0-9]/g,'').slice(-28);
+            const old = targetDoc.getElementById(id);
+            if (old) {
+                loadedFontCss.add(font.css);
+                finish(true);
+                return;
+            }
+
+            const link = targetDoc.createElement('link');
+            link.id = id;
+            link.rel = 'stylesheet';
+            link.href = font.css;
+            link.crossOrigin = 'anonymous';
+
+            const timer = setTimeout(() => finish(false), 5000);
+            link.onload = async () => {
+                // CSS 到达后再确认字体本身可用；整个过程仍是异步的，不阻塞选择器。
+                try {
+                    if (targetDoc.fonts?.load) {
+                        await Promise.race([
+                            targetDoc.fonts.load(`16px "${font.family.replace(/"/g, '\\"')}"`),
+                            new Promise(r => setTimeout(r, 1800))
+                        ]);
+                    }
+                } catch (_) {}
+                finish(true);
+            };
+            link.onerror = () => finish(false);
+            (targetDoc.head || targetDoc.documentElement).appendChild(link);
+        });
+
+        loadingFontCss.set(font.css, promise);
+        return promise;
+    };
 
     let pendingLrcFont = null;
     let lrcFontModalOriginal = null;
-    const applyLrcFont = (font, persist = true) => {
+    let fontPreviewToken = 0;
+
+    const setLrcFontVisual = (font) => {
         const family = font?.family || '';
-        UI.wrapper.style.setProperty('--fm-lrc-family', family ? `"${family.replace(/"/g,'\\"')}"` : 'inherit');
-        if (UI.outLyrics) UI.outLyrics.style.fontFamily = family ? `"${family}"` : '';
-        if (UI.outLyricsScroll) UI.outLyricsScroll.style.fontFamily = family ? `"${family}"` : '';
+        const safeFamily = family ? `"${family.replace(/"/g,'\\"')}"` : '';
+        UI.wrapper.style.setProperty('--fm-lrc-family', safeFamily || 'inherit');
+        if (UI.outLyrics) UI.outLyrics.style.fontFamily = safeFamily;
+        if (UI.outLyricsScroll) UI.outLyricsScroll.style.fontFamily = safeFamily;
         if (UI.lrcFontCurrent) UI.lrcFontCurrent.textContent = font?.name || '默认字体';
+    };
+
+    const applyLrcFont = (font, persist = true) => {
+        setLrcFontVisual(font);
         if (persist) {
             savedSettings.lrcFontName = font?.name || '默认字体';
-            savedSettings.lrcFontFamily = family;
+            savedSettings.lrcFontFamily = font?.family || '';
             savedSettings.lrcFontCss = font?.css || '';
             scheduleSettingsSave();
         }
     };
+
     const findSavedLrcFont = () => ZEOSEVEN_FONTS.find(f => f.name === savedSettings.lrcFontName || f.family === savedSettings.lrcFontFamily) || null;
+
     const renderFontList = () => {
         const q = (UI.fontSearch?.value || '').trim().toLowerCase();
         const list = ZEOSEVEN_FONTS.filter(f => !q || f.name.toLowerCase().includes(q) || f.family.toLowerCase().includes(q));
-        UI.fontList.replaceChildren();
+        const frag = targetDoc.createDocumentFragment();
+
         if (!list.length) {
-            const empty = targetDoc.createElement('div'); empty.className='fm-font-empty'; empty.textContent='没有找到匹配的字体'; UI.fontList.appendChild(empty); return;
+            const empty = targetDoc.createElement('div');
+            empty.className = 'fm-font-empty';
+            empty.textContent = '没有找到匹配的字体';
+            frag.appendChild(empty);
+        } else {
+            list.forEach(font => {
+                const item = targetDoc.createElement('button');
+                item.type = 'button';
+                item.className = 'fm-font-item';
+                const active = pendingLrcFont?.family === font.family;
+                if (active) item.classList.add('active');
+
+                // 默认只显示字体名称，不主动触发远程字体加载。
+                // 已经加载过的字体才使用真实字体做名称预览。
+                const preview = targetDoc.createElement('span');
+                preview.className = 'fm-font-preview';
+                preview.textContent = font.name;
+                if (loadedFontCss.has(font.css)) preview.style.fontFamily = `"${font.family.replace(/"/g,'\\"')}"`;
+
+                const meta = targetDoc.createElement('span');
+                meta.className = 'fm-font-meta';
+                meta.textContent = loadedFontCss.has(font.css) ? '已加载' : '点击预览';
+
+                const check = targetDoc.createElement('span');
+                check.className = 'fm-font-check';
+                check.innerHTML = active ? '<i class="fas fa-check"></i>' : '';
+
+                item.append(preview, meta, check);
+                item.addEventListener('click', async (e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    if (item.disabled) return;
+                    item.disabled = true;
+                    const token = ++fontPreviewToken;
+                    meta.textContent = '加载中…';
+
+                    const ok = await ensureZeoFontLoaded(font);
+                    if (token !== fontPreviewToken) return;
+
+                    if (!ok) {
+                        item.disabled = false;
+                        meta.textContent = '加载失败';
+                        API.toast('字体加载失败，请检查网络后重试');
+                        return;
+                    }
+
+                    pendingLrcFont = font;
+                    applyLrcFont(font, false); // 立即预览，但不保存
+                    item.disabled = false;
+                    renderFontList();
+                });
+                frag.appendChild(item);
+            });
         }
-        list.forEach(font => {
-            const item = targetDoc.createElement('button'); item.type='button'; item.className='fm-font-item';
-            const active = pendingLrcFont?.family === font.family;
-            if (active) item.classList.add('active');
-            const preview = targetDoc.createElement('span'); preview.className='fm-font-preview'; preview.textContent=font.name;
-            preview.style.fontFamily = `"${font.family}"`;
-            const meta = targetDoc.createElement('span'); meta.className='fm-font-meta'; meta.textContent=font.family;
-            const check = targetDoc.createElement('span'); check.className='fm-font-check'; check.innerHTML=active ? '<i class="fas fa-check"></i>' : '';
-            item.append(preview, meta, check);
-            item.onclick = async () => {
-                pendingLrcFont = font;
-                // 只在用户真正点击时加载字体，避免打开选择器就批量下载字体文件。
-                await ensureZeoFontLoaded(font);
-                applyLrcFont(font, false);
-                renderFontList();
-            };
-            UI.fontList.appendChild(item);
-        });
+
+        UI.fontList.replaceChildren(frag);
     };
+
     const closeLrcFontModal = (restore = false) => {
-        if (restore && lrcFontModalOriginal) applyLrcFont(lrcFontModalOriginal, false);
+        ++fontPreviewToken;
+        if (restore) {
+            if (lrcFontModalOriginal) applyLrcFont(lrcFontModalOriginal, false);
+            else applyLrcFont(null, false);
+        }
         UI.fontModalBackdrop.classList.remove('show');
-        pendingLrcFont = null; lrcFontModalOriginal = null;
+        pendingLrcFont = null;
+        lrcFontModalOriginal = null;
     };
+
     const openLrcFontModal = () => {
         lrcFontModalOriginal = findSavedLrcFont();
         pendingLrcFont = lrcFontModalOriginal;
+        fontPreviewToken++;
         UI.fontSearch.value = '';
         renderFontList();
         UI.fontModalBackdrop.classList.add('show');
-        setTimeout(() => UI.fontSearch.focus(), 0);
+        requestAnimationFrame(() => {
+            try { UI.fontSearch.focus({ preventScroll: true }); } catch (_) { UI.fontSearch.focus(); }
+        });
     };
 
     // ================= 页面导航 =================
