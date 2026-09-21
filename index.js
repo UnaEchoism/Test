@@ -2904,9 +2904,11 @@
         else playNext();
     };
     audio.ontimeupdate = () => {
-        // 播放器关闭时，音频可以继续播放，但不再驱动播放器 DOM。
-        if (!STATE.isExpanded) return;
-        if (!STATE.isSeekingProgress) updateProgressUI(audio.currentTime, audio.duration);
+        // 播放器关闭时，停止播放器面板的高频 DOM 更新，但歌词必须继续跟随音乐推进。
+        // 歌词现在是独立的小型渲染层，因此不会再因为这里继续更新而把整个播放器页面带入高频重排。
+        if (STATE.isExpanded && !STATE.isSeekingProgress) {
+            updateProgressUI(audio.currentTime, audio.duration);
+        }
         if (STATE.isLyricsVisible) updateLyrics();
     };
     audio.onloadedmetadata = () => { if (!STATE.isSeekingProgress) updateProgressUI(audio.currentTime, audio.duration); };
