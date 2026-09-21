@@ -507,9 +507,8 @@
         .fm-pop-item { padding: 8px 16px; font-size: 12px; color: var(--fm-text-main); cursor: pointer; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; transition: background 0.2s; }
         .fm-pop-item:hover { background: var(--fm-accent); color: #fff; }
 
-        .fm-playlist { flex: 0 0 auto; overflow: visible; padding: 4px 0; position: relative; }
-        .fm-playlist::-webkit-scrollbar { width: 4px; }
-        .fm-playlist::-webkit-scrollbar-thumb { background: var(--fm-border); border-radius: 2px; }
+        .fm-playlist { flex: 0 0 auto; overflow: visible; padding: 4px 0; position: relative; scrollbar-width:none; -ms-overflow-style:none; }
+        .fm-playlist::-webkit-scrollbar { width:0; height:0; display:none; }
         
         .fm-item { display: flex; justify-content: space-between; align-items: center; padding: 8px 16px; cursor: pointer; transition: background 0.2s; }
         .fm-item:hover { background: var(--fm-border); }
@@ -656,9 +655,8 @@
         .fm-app-name { font-size:15px; font-weight:700; color:var(--fm-text-main); }
         .fm-app-sub { margin-top:2px; font-size:9px; letter-spacing:.16em; color:var(--fm-text-sub); }
         .fm-pages { flex:1 1 auto; min-height:0; overflow:hidden; position:relative; }
-        .fm-page { display:none; height:100%; min-height:0; overflow-y:auto; overflow-x:hidden; padding:8px 16px 18px; box-sizing:border-box; scrollbar-width:thin; }
-        .fm-page::-webkit-scrollbar { width: 4px; }
-        .fm-page::-webkit-scrollbar-thumb { background: var(--fm-border); border-radius: 2px; }
+        .fm-page { display:none; height:100%; min-height:0; overflow-y:auto; overflow-x:hidden; padding:8px 16px 18px; box-sizing:border-box; scrollbar-width:none; -ms-overflow-style:none; }
+        .fm-page::-webkit-scrollbar { width:0; height:0; display:none; }
         .fm-page.active { display:flex; flex-direction:column; gap:12px; }
         .fm-page.active > * { flex-shrink: 0; }
         .fm-section-kicker { font-size:9px; letter-spacing:.18em; color:var(--fm-accent); font-weight:800; margin-bottom:3px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
