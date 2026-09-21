@@ -638,6 +638,10 @@
             display: flex; flex-direction: column; align-items: center; gap: 4px;
             opacity: 0; transition: opacity 0.5s;
         }
+        /* 独立歌词层的显隐状态：拆出 wrapper 后不能再依赖播放器旧的 .show 样式。 */
+        .fm-out-lyrics.show, .fm-out-lyrics-scroll.show {
+            opacity: 1;
+        }
         .fm-lrc-line { font-size: var(--fm-lrc-font, 16px); font-weight: bold; color: var(--fm-accent); text-shadow: 0 2px 8px var(--fm-shadow), 0 0 2px rgba(0,0,0,0.5); line-height: 1.4; }
         .fm-lrc-plain-line { font-size: var(--fm-lrc-font, 16px); font-weight: bold; color: var(--fm-accent); line-height: 1.4; text-shadow: 0 2px 8px var(--fm-shadow), 0 0 2px rgba(0,0,0,0.5); }
         .fm-lrc-plain-trans { margin-top: 4px; }
