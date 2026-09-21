@@ -1048,15 +1048,18 @@
         };
         const id = 'fm-zeofont-inspect-' + btoa(unescape(encodeURIComponent(cssUrl))).replace(/[^a-zA-Z0-9]/g,'').slice(-28);
         const old = targetDoc.getElementById(id);
-        if (old) {
-            try { finish(extractFontFamilyFromRules(old.sheet?.cssRules)); return; } catch (_) {}
-        }
         const link = targetDoc.createElement('link');
         link.id = id;
         link.rel = 'stylesheet';
         link.href = cssUrl;
         link.crossOrigin = 'anonymous';
         const timer = setTimeout(() => finish(''), timeout);
+        if (old) {
+            try {
+                const family = extractFontFamilyFromRules(old.sheet?.cssRules);
+                if (family) { finish(family); return; }
+            } catch (_) {}
+        }
         link.onload = () => {
             let family = '';
             try { family = extractFontFamilyFromRules(link.sheet?.cssRules); } catch (_) {}
@@ -1167,7 +1170,11 @@
         };
     };
 
+    // 防止误点/连点导致多个导入流程同时运行，尤其是字体 CSS 已存在时。
+    let isImportingZeoFont = false;
+
     const importZeoSevenFont = async () => {
+        if (isImportingZeoFont) return;
         const raw = UI.lrcFontUrl?.value.trim();
         if (!raw) { API.toast('请先粘贴 ZeoSeven 字体网址'); return; }
         const parsed = parseZeoSevenUrl(raw);
@@ -1177,6 +1184,7 @@
         }
 
         const btn = UI.lrcFontImport;
+        isImportingZeoFont = true;
         if (btn) { btn.disabled = true; btn.textContent = '加载中'; }
         try {
             // 关键：直接加载 FontsAPI CSS，再从已经加载的 stylesheet 读取 @font-face。
@@ -1199,7 +1207,11 @@
             console.warn('[ArV] ZeoSeven font import failed:', err);
             API.toast('字体导入失败，请检查网址和网络连接');
         } finally {
-            if (btn) { btn.disabled = false; btn.textContent = '导入'; }
+            isImportingZeoFont = false;
+            if (btn) {
+                btn.disabled = false;
+                btn.textContent = '导入';
+            }
         }
     };
 
