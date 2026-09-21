@@ -563,11 +563,21 @@
         }
 
         /* 桌面歌词字体下拉选择器：使用原生 select，避免 WebView 弹层透明/遮挡问题 */
-        .fm-lrc-font-row { display:flex; align-items:center; gap:10px; }
-        .fm-lrc-font-current { min-width:0; flex:1; color:var(--fm-text-sub); font-size:12px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-        .fm-lrc-font-select { flex:0 1 190px; min-width:120px; max-width:55%; border:1px solid var(--fm-border); background:var(--fm-panel); color:var(--fm-text-main); border-radius:var(--fm-radius-input); padding:7px 30px 7px 10px; font-size:12px; cursor:pointer; outline:none; }
+        .fm-lrc-font-row { display:flex; align-items:flex-start; gap:10px; }
+        .fm-lrc-font-picker { flex:1; min-width:0; display:flex; flex-direction:column; gap:6px; }
+        .fm-lrc-font-search { width:100%; min-width:0; height:32px; box-sizing:border-box; border:1px solid var(--fm-border); background:var(--fm-panel); color:var(--fm-text-main); border-radius:var(--fm-radius-input); padding:6px 10px; font-size:12px; outline:none; }
+        .fm-lrc-font-search::placeholder { color:var(--fm-text-sub); opacity:.8; }
+        .fm-lrc-font-search:focus { border-color:var(--fm-accent); }
+        .fm-lrc-font-select { width:100%; min-width:0; height:34px; box-sizing:border-box; border:1px solid var(--fm-border); background:var(--fm-panel); color:var(--fm-text-main); border-radius:var(--fm-radius-input); padding:5px 30px 5px 10px; font-size:12px; cursor:pointer; outline:none; }
         .fm-lrc-font-select:focus { border-color:var(--fm-accent); }
         .fm-lrc-font-select option { background:var(--fm-panel); color:var(--fm-text-main); }
+
+        /* 强制把自定义字体应用到桌面歌词本体。播放器其它文字完全不受影响。
+           注意：播放器基础样式对所有元素设置了默认字体，所以这里必须使用 !important。 */
+        .fm-out-lyrics, .fm-out-lyrics *,
+        .fm-out-lyrics-scroll, .fm-out-lyrics-scroll * {
+            font-family: var(--fm-lrc-family, var(--fm-font)) !important;
+        }
 
         .fm-out-lyrics {
             position: absolute;
@@ -875,9 +885,12 @@
                                 </div>
                                 <div class="fm-lrc-settings-row fm-lrc-font-row">
                                     <span class="fm-lrc-settings-label">字体</span>
-                                    <select class="fm-lrc-font-select" id="fm-lrc-font-select" aria-label="桌面歌词字体">
-                                        <option value="">默认字体</option>
-                                    </select>
+                                    <div class="fm-lrc-font-picker">
+                                        <input class="fm-lrc-font-search" id="fm-lrc-font-search" type="search" placeholder="搜索字体" autocomplete="off" aria-label="搜索桌面歌词字体">
+                                        <select class="fm-lrc-font-select" id="fm-lrc-font-select" aria-label="桌面歌词字体">
+                                            <option value="">默认字体</option>
+                                        </select>
+                                    </div>
                                 </div>
                             </div>
                         </div>
@@ -969,6 +982,7 @@
         lrcBottomSlider: wrapper.querySelector('#fm-lrc-bottom-slider'),
         lrcFontCurrent: wrapper.querySelector('#fm-lrc-font-select'),
         lrcFontSelect: wrapper.querySelector('#fm-lrc-font-select'),
+        lrcFontSearch: wrapper.querySelector('#fm-lrc-font-search'),
         outLyricsScroll: wrapper.querySelector('#fm-out-lyrics-scroll'),
         outLyricsScrollList: wrapper.querySelector('#fm-lrc-scroll-list'),
         sourceSelect: wrapper.querySelector('#fm-source-select'),
@@ -1080,9 +1094,18 @@
     const setLrcFontVisual = (font) => {
         const family = font?.family || '';
         const safeFamily = family ? `"${family.replace(/"/g,'\\"')}"` : '';
-        UI.wrapper.style.setProperty('--fm-lrc-family', safeFamily || 'inherit');
-        if (UI.outLyrics) UI.outLyrics.style.fontFamily = safeFamily;
-        if (UI.outLyricsScroll) UI.outLyricsScroll.style.fontFamily = safeFamily;
+        UI.wrapper.style.setProperty('--fm-lrc-family', safeFamily || 'var(--fm-font)');
+
+        // 强制写入 !important：原播放器的 * 规则会给每个歌词子元素设置默认字体，
+        // 单纯让父级继承是不够的，因此这里连同现有歌词子元素一起覆盖。
+        const lyricRoots = [UI.outLyrics, UI.outLyricsScroll, UI.outLyricsScrollList].filter(Boolean);
+        lyricRoots.forEach(root => {
+            root.style.setProperty('font-family', safeFamily || 'var(--fm-font)', 'important');
+            root.querySelectorAll('*').forEach(el => {
+                el.style.setProperty('font-family', safeFamily || 'var(--fm-font)', 'important');
+            });
+        });
+
         if (UI.lrcFontCurrent) {
             UI.lrcFontCurrent.value = font?.name || '';
             UI.lrcFontCurrent.style.fontFamily = safeFamily || '';
@@ -1101,18 +1124,32 @@
 
     const findSavedLrcFont = () => ZEOSEVEN_FONTS.find(f => f.name === savedSettings.lrcFontName || f.family === savedSettings.lrcFontFamily) || null;
 
-    const populateLrcFontSelect = () => {
+    const populateLrcFontSelect = (keyword = '') => {
         if (!UI.lrcFontSelect) return;
-        const frag = targetDoc.createDocumentFragment();
-        ZEOSEVEN_FONTS.forEach(font => {
+        const q = String(keyword || '').trim().toLowerCase();
+        const current = UI.lrcFontSelect.value;
+        UI.lrcFontSelect.innerHTML = '';
+
+        const defaultOption = targetDoc.createElement('option');
+        defaultOption.value = '';
+        defaultOption.textContent = '默认字体';
+        UI.lrcFontSelect.appendChild(defaultOption);
+
+        ZEOSEVEN_FONTS.filter(font => !q || `${font.name} ${font.family}`.toLowerCase().includes(q)).forEach(font => {
             const option = targetDoc.createElement('option');
             option.value = font.name;
             option.textContent = font.name;
             option.dataset.family = font.family;
             option.dataset.css = font.css;
-            frag.appendChild(option);
+            // 如果该字体已经加载，让下拉选项也尽可能用自身字体显示。
+            if (loadedFontCss.has(font.css)) option.style.fontFamily = `"${font.family.replace(/"/g,'\\"')}"`;
+            UI.lrcFontSelect.appendChild(option);
         });
-        UI.lrcFontSelect.appendChild(frag);
+
+        const saved = findSavedLrcFont();
+        const desired = (saved?.name === current || saved?.name) ? saved.name : current;
+        if ([...UI.lrcFontSelect.options].some(o => o.value === desired)) UI.lrcFontSelect.value = desired;
+        else UI.lrcFontSelect.value = '';
     };
 
     const previewLrcFontFromSelect = async (font) => {
@@ -1124,21 +1161,31 @@
         if (select) select.disabled = true;
         const ok = await ensureZeoFontLoaded(font);
         if (ok) {
-            // 选中即预览并保存；使用原生下拉后不再需要额外确认弹层。
+            // 选中后立即、强制应用到桌面歌词。
             applyLrcFont(font, true);
-            if (select) select.style.fontFamily = `"${font.family.replace(/"/g,'\"')}"`;
+            if (select) select.style.fontFamily = `"${font.family.replace(/"/g,'\\"')}"`;
         } else {
             API.toast('字体加载失败，请检查网络后重试');
             const saved = findSavedLrcFont();
+            applyLrcFont(saved, false);
             if (select) {
                 select.value = saved?.name || '';
-                select.style.fontFamily = saved?.family ? `"${saved.family.replace(/"/g,'\"')}"` : '';
+                select.style.fontFamily = saved?.family ? `"${saved.family.replace(/"/g,'\\"')}"` : '';
             }
         }
         if (select) select.disabled = false;
     };
 
     populateLrcFontSelect();
+
+    // 歌词是动态重建的，使用一个极轻量的 MutationObserver 确保“强制字体”不会
+    // 因为切歌、切换歌词模式、逐句动画重绘而丢失。只观察两个歌词容器，不影响播放器其它 DOM。
+    const lrcFontObserver = new targetWin.MutationObserver(() => {
+        const activeFont = findSavedLrcFont();
+        if (activeFont || savedSettings.lrcFontName === '默认字体') setLrcFontVisual(activeFont);
+    });
+    if (UI.outLyrics) lrcFontObserver.observe(UI.outLyrics, { childList:true, subtree:true });
+    if (UI.outLyricsScroll) lrcFontObserver.observe(UI.outLyricsScroll, { childList:true, subtree:true });
 
     // ================= 页面导航 =================
     UI.themeDots.forEach(dot => dot.classList.toggle('active', dot.dataset.theme === STATE.currentTheme));
@@ -2399,6 +2446,10 @@
         const name = UI.lrcFontSelect.value;
         const font = ZEOSEVEN_FONTS.find(f => f.name === name) || null;
         await previewLrcFontFromSelect(font);
+    };
+    UI.lrcFontSearch.oninput = () => {
+        const keyword = UI.lrcFontSearch.value;
+        populateLrcFontSelect(keyword);
     };
 
     const THEME_DEFAULT_COLORS = {
