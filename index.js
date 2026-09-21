@@ -17,13 +17,6 @@
         console.warn("[АрⅤ] 跨域限制，降级至当前环境。");
     }
 
-    // 关键：脚本反复重装时，先清理上一实例，避免旧播放器/旧歌词层/旧事件继续留在页面。
-    try {
-        if (typeof targetWin.__apvPlayerCleanup === 'function') targetWin.__apvPlayerCleanup();
-    } catch (e) {
-        console.warn('[ArV] 清理上一播放器实例失败', e);
-    }
-
     // ================= 核心配置 =================
     const CONFIG = {
         ID: 'st-flow-music-player-pro',
@@ -95,24 +88,31 @@
         return result;
     }
 
+    // 启动阶段不再扫描/去重整份歌单数据。
+    // 大歌单的整理延迟到用户第一次打开播放器时执行，避免拖慢酒馆启动。
     let startupDedupeCount = 0;
     let startupLimitCount = 0;
-    savedPlaylists.forEach(list => {
-        const before = list.tracks.length;
-        list.tracks = dedupeAndLimitTracks(list.tracks);
-        const removed = before - list.tracks.length;
-        if (removed > 0) {
-            if (before > CONFIG.MAX_TRACKS_PER_LIST) {
-                startupLimitCount += (before - CONFIG.MAX_TRACKS_PER_LIST);
-                startupDedupeCount += (removed - (before - CONFIG.MAX_TRACKS_PER_LIST));
-            } else {
-                startupDedupeCount += removed;
+    let playlistsPrepared = false;
+    function preparePlaylistsForUI() {
+        if (playlistsPrepared) return;
+        playlistsPrepared = true;
+        savedPlaylists.forEach(list => {
+            const before = list.tracks.length;
+            list.tracks = dedupeAndLimitTracks(list.tracks);
+            const removed = before - list.tracks.length;
+            if (removed > 0) {
+                if (before > CONFIG.MAX_TRACKS_PER_LIST) {
+                    startupLimitCount += (before - CONFIG.MAX_TRACKS_PER_LIST);
+                    startupDedupeCount += Math.max(0, removed - (before - CONFIG.MAX_TRACKS_PER_LIST));
+                } else {
+                    startupDedupeCount += removed;
+                }
             }
+        });
+        STATE.playlists = savedPlaylists;
+        if (startupDedupeCount > 0 || startupLimitCount > 0) {
+            try { localStorage.setItem(CONFIG.STORAGE_KEY, JSON.stringify(savedPlaylists)); } catch (e) {}
         }
-    });
-    
-    if (startupDedupeCount > 0 || startupLimitCount > 0) {
-        try { localStorage.setItem(CONFIG.STORAGE_KEY, JSON.stringify(savedPlaylists)); } catch (e) {}
     }
 
     // 读取本地设置
@@ -148,11 +148,9 @@
         lyricsData: [],
         isLyricsVisible: true,
         lastActiveLrcIndex: -1,
-        lastRenderedScrollIndex: -1,
         isSeekingProgress: false,
         playRequestId: 0,
-        uiInitialized: false,
-        uiNeedsRender: true
+        uiInitialized: false
     };
 
     const getCurrentPlaylist = () => STATE.playlists.find(p => p.id === STATE.currentPlaylistId) || STATE.playlists[0];
@@ -160,7 +158,6 @@
 
     let audio = new targetWin.Audio();
     let lrcRafId = null;
-    let lrcTimerId = null;
 
     const DEFAULT_PLAYLIST_COLORS = ['#4a90e2', '#9b59b6', '#e67e22', '#2ecc71', '#e74c3c', '#1abc9c'];
     const getPlaylistColor = (playlist) => playlist?.color || savedSettings.customColor || '#4a90e2';
@@ -376,8 +373,6 @@
 
     const container = targetDoc.createElement('div');
     container.id = CONFIG.ID;
-    // 性能关键：宿主本身不再覆盖整个视口。播放器的 ball/panel 仍可通过 overflow:visible
-    // 定位到视口任意位置，但这个根节点自身只占 1×1px，避免给 SillyTavern 制造全屏固定层。
     container.style.cssText = `
         position: fixed; top: 0; left: 0;
         width: 0; height: 0;
@@ -416,14 +411,14 @@
         .fm-ball {
             position: absolute; width: var(--fm-ball-size, 50px); height: var(--fm-ball-size, 50px); 
             border-radius: var(--fm-radius-ball);
-            background: var(--fm-bg);
+            background: var(--fm-bg); backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px);
             border: 1px solid var(--fm-border); box-shadow: 0 4px 12px var(--fm-shadow);
             display: flex; justify-content: center; align-items: center;
             color: var(--fm-text-main); font-size: 20px; cursor: grab; pointer-events: auto;
             transition: var(--fm-transition); touch-action: none; user-select: none; z-index: 10;
         }
         .fm-ball:active { cursor: grabbing; transform: scale(0.95); }
-        .fm-ball.playing { box-shadow: 0 0 12px var(--fm-shadow), 0 0 0 3px var(--fm-border); }
+        .fm-ball.playing { animation: breathe 3s ease-in-out infinite; }
         @keyframes breathe {
             0%, 100% { box-shadow: 0 0 8px var(--fm-shadow), 0 0 0 0 rgba(255,255,255,0); transform: scale(1); }
             50% { box-shadow: 0 0 16px var(--fm-shadow), 0 0 0 6px var(--fm-border); transform: scale(1.02); }
@@ -435,7 +430,7 @@
             max-width: calc(100vw - 40px);
             height: var(--fm-panel-height, 540px);
             max-height: calc(100dvh - 40px);
-            background: var(--fm-bg);
+            background: var(--fm-bg); backdrop-filter: blur(20px); -webkit-backdrop-filter: blur(20px);
             border: 1px solid var(--fm-border); 
             border-radius: var(--fm-radius-panel);
             box-shadow: 0 10px 30px var(--fm-shadow); display: flex; flex-direction: column;
@@ -443,16 +438,6 @@
             transition: var(--fm-transition); z-index: 5; overflow: hidden;
         }
         .fm-panel.open { opacity: 1; transform: scale(1) translateY(0); pointer-events: auto; }
-
-        /* 性能测试版：避免 backdrop-filter 在 Tauri/WebView 中持续触发大面积 GPU 合成。
-           保留半透明外观，但取消实时背景模糊。 */
-        .fm-ball, .fm-panel, .fm-popover, .dot-glass {
-            backdrop-filter: none !important;
-            -webkit-backdrop-filter: none !important;
-        }
-        .fm-panel:not(.open) {
-            display: none;
-        }
 
         .fm-header { display: flex; align-items: center; padding: 16px 20px; border-bottom: 1px solid var(--fm-border); cursor: move; }
         .fm-cover-mock { width: 44px; height: 44px; border-radius: var(--fm-radius-btn); background: var(--fm-border); display: flex; justify-content: center; align-items: center; color: var(--fm-text-sub); font-size: 18px; margin-right: 12px; flex-shrink: 0; transition: var(--fm-transition); }
@@ -558,14 +543,14 @@
         .dot-adaptive { background: linear-gradient(45deg, #4a90e2, #50e3c2); }
         .dot-light { background: #f0f0f0; border-color: #ccc; }
         .dot-dark { background: #222; }
-        .dot-glass { background: rgba(255,255,255,0.3); border-color: rgba(255,255,255,0.8); }
+        .dot-glass { background: rgba(255,255,255,0.3); border-color: rgba(255,255,255,0.8); backdrop-filter: blur(4px); }
 
         /* 优化歌词动画：延长持续时间，调整缓动函数，使其更柔和 */
         
         .fm-panel-bg {
             position: absolute; top: -10%; left: -10%; width: 120%; height: 120%; z-index: -1;
             background-size: cover; background-position: center; background-repeat: no-repeat;
-            pointer-events: none; transition: filter 0.3s; contain: paint;
+            pointer-events: none; transition: filter 0.3s;
             background-image: var(--fm-bg-image, none);
             filter: blur(var(--fm-bg-blur, 0px)) brightness(var(--fm-bg-brightness, 100%));
         }
@@ -580,7 +565,7 @@
         .fm-panel-bg {
             position: absolute; top: -10%; left: -10%; width: 120%; height: 120%; z-index: -1;
             background-size: cover; background-position: center; background-repeat: no-repeat;
-            pointer-events: none; transition: filter 0.3s; contain: paint;
+            pointer-events: none; transition: filter 0.3s;
             background-image: var(--fm-bg-image, none);
             filter: blur(var(--fm-bg-blur, 0px)) brightness(var(--fm-bg-brightness, 100%));
         }
@@ -607,20 +592,11 @@
             font-family: var(--fm-lrc-family, var(--fm-font)) !important;
         }
 
-        /* 性能修复：桌面歌词本体只创建“歌词实际占用的渲染区域”。
-           之前这里使用 absolute + 全屏播放器容器，歌词会跟着 100dvh 的父层参与大范围布局/绘制。
-           改为 fixed 后，歌词自身独立定位到视口，只对实际文字区域进行布局与绘制。 */
         .fm-out-lyrics {
-            position: fixed;
+            position: absolute;
             bottom: calc(var(--fm-lrc-bottom, 80px) + env(safe-area-inset-bottom, 0px));
-            left: 50%; transform: translateX(-50%);
+            max-height: 40dvh; overflow: hidden; left: 50%; transform: translateX(-50%);
             width: max-content; max-width: 80vw; min-width: 60px; min-height: 24px;
-            max-height: 40dvh;
-            height: auto;
-            overflow: hidden;
-            box-sizing: border-box;
-            contain: layout paint style;
-            isolation: isolate;
             text-align: center; pointer-events: none; z-index: 2147483647;
             display: flex; flex-direction: column; align-items: center; gap: 4px;
             opacity: 0; transition: opacity 0.5s, bottom 0.2s;
@@ -645,8 +621,8 @@
             animation: lrc-fall-in 0.8s cubic-bezier(0.22, 1, 0.36, 1) forwards;
         }
         @keyframes lrc-fall-in { 
-            0% { opacity: 0; transform: translateY(-40px); }
-            100% { opacity: 1; transform: translateY(0); } 
+            0% { opacity: 0; transform: translateY(-40px); filter: blur(4px); }
+            100% { opacity: 1; transform: translateY(0); filter: blur(0); } 
         }
         /* 翻译专用渐现动画：无位移，仅透明度和模糊变化 */
         .lrc-trans-fade {
@@ -654,32 +630,26 @@
             animation: lrc-trans-fade-in 0.8s cubic-bezier(0.22, 1, 0.36, 1) forwards;
         }
         @keyframes lrc-trans-fade-in {
-            0% { opacity: 0; }
-            100% { opacity: 1; }
+            0% { opacity: 0; filter: blur(4px); }
+            100% { opacity: 1; filter: blur(0); }
         }
         /* 优化退场动画：原地模糊消散，更自然柔和 */
         @keyframes lrc-fade-out {
-            0% { opacity: 1; transform: scale(1); }
-            100% { opacity: 0; transform: scale(0.95); }
+            0% { opacity: 1; transform: scale(1); filter: blur(0); }
+            100% { opacity: 0; transform: scale(0.95); filter: blur(8px); }
         }
         .lrc-highlight {
             color: #ff4d4f !important;
             text-shadow: 0 0 8px rgba(255, 77, 79, 0.6), 0 2px 4px rgba(0,0,0,0.5) !important;
         }
 
-        /* 三行滚动同样独立成一个小型 fixed 渲染区域，不再继承全屏 absolute 布局。 */
         .fm-out-lyrics-scroll {
-            position: fixed;
+            position: absolute;
             bottom: calc(var(--fm-lrc-bottom, 80px) + env(safe-area-inset-bottom, 0px));
-            left: 50%; transform: translateX(-50%);
+            max-height: 40dvh; overflow: hidden; left: 50%; transform: translateX(-50%);
             width: max-content; max-width: 80vw; min-width: 60px;
             height: calc(var(--fm-lrc-font, 16px) * 5.4);
-            max-height: 40dvh;
-            overflow: hidden;
-            box-sizing: border-box;
-            contain: layout paint style;
-            isolation: isolate;
-            pointer-events: none; z-index: 2147483647;
+            overflow: hidden; pointer-events: none; z-index: 2147483647;
             opacity: 0; transition: opacity 0.5s, bottom 0.2s;
             -webkit-mask-image: linear-gradient(to bottom, transparent 0%, black 30%, black 70%, transparent 100%);
             mask-image: linear-gradient(to bottom, transparent 0%, black 30%, black 70%, transparent 100%);
@@ -788,7 +758,8 @@
     shadow.appendChild(style);
 
     const wrapper = targetDoc.createElement('div');
-    wrapper.className = `fm-player-root theme-${STATE.currentTheme}`;
+    wrapper.className = `theme-${STATE.currentTheme}`;
+    wrapper.style.contain = 'layout style';
     
     wrapper.innerHTML = `
         <div class="fm-ball" id="fm-ball" title="拖拽移动，点击展开"><i class="fas fa-music"></i></div>
@@ -1057,109 +1028,6 @@
         timeDuration: wrapper.querySelector('#fm-time-duration')
     };
 
-    // ================= 独立桌面歌词渲染层 =================
-    // 歌词独立于播放器 Shadow DOM，但宿主本身只占“歌词实际需要的那一小块”。
-    // 不使用 100vw / 100vh，避免为了隔离歌词而重新制造全屏绘制区域。
-    const oldLyricHost = targetDoc.getElementById('apv-lyrics-host');
-    if (oldLyricHost) oldLyricHost.remove();
-    const lyricHost = targetDoc.createElement('div');
-    lyricHost.id = 'apv-lyrics-host';
-    lyricHost.style.cssText = `
-        position: fixed;
-        left: 50%;
-        bottom: calc(var(--fm-lrc-bottom, 80px) + env(safe-area-inset-bottom, 0px));
-        width: max-content;
-        max-width: 80vw;
-        min-width: 60px;
-        height: max-content;
-        max-height: 40dvh;
-        transform: translateX(-50%);
-        overflow: visible;
-        pointer-events: none;
-        z-index: 2147483647;
-        contain: layout paint style;
-        isolation: isolate;
-    `;
-    targetDoc.body.appendChild(lyricHost);
-    const lyricShadow = lyricHost.attachShadow({ mode: 'open' });
-    const lyricStyle = targetDoc.createElement('style');
-    lyricStyle.textContent = `
-        :host {
-            all: initial;
-            --fm-font: 'Segoe UI', -apple-system, BlinkMacSystemFont, Roboto, sans-serif;
-            --fm-lrc-font: 16px;
-            --fm-lrc-bottom: 80px;
-            --fm-lrc-family: var(--fm-font);
-            --fm-accent: #fff;
-            --fm-text-sub: rgba(255,255,255,.7);
-            --fm-shadow: rgba(0,0,0,.4);
-        }
-        .fm-out-lyrics, .fm-out-lyrics *,
-        .fm-out-lyrics-scroll, .fm-out-lyrics-scroll * {
-            font-family: var(--fm-lrc-family, var(--fm-font)) !important;
-            box-sizing: border-box;
-        }
-        .fm-out-lyrics {
-            position: relative;
-            width: max-content; max-width: 80vw; min-width: 60px;
-            min-height: 24px; max-height: 40dvh; height: auto;
-            overflow: hidden;
-            text-align: center; pointer-events: none;
-            display: flex; flex-direction: column; align-items: center; gap: 4px;
-            opacity: 0; transition: opacity .5s;
-        }
-        .fm-out-lyrics.show { opacity: 1; }
-        .fm-out-lyrics:not(.show), .fm-out-lyrics-scroll:not(.show) { display: none !important; }
-        .fm-lrc-line { font-size: var(--fm-lrc-font, 16px); font-weight: bold; color: var(--fm-accent); text-shadow: 0 2px 8px var(--fm-shadow), 0 0 2px rgba(0,0,0,.5); line-height: 1.4; }
-        .fm-lrc-plain-line { font-size: var(--fm-lrc-font, 16px); font-weight: bold; color: var(--fm-accent); line-height: 1.4; text-shadow: 0 2px 8px var(--fm-shadow), 0 0 2px rgba(0,0,0,.5); }
-        .fm-lrc-plain-trans { margin-top: 4px; }
-        .fm-lrc-trans { font-size: calc(var(--fm-lrc-font, 16px) * .75); color: var(--fm-text-sub); text-shadow: 0 1px 4px var(--fm-shadow); }
-        .lrc-anim-char { display: inline-block; opacity: 0; transform: translateY(4px); animation: lrc-in 1s cubic-bezier(.22,1,.36,1) forwards; }
-        @keyframes lrc-in { to { opacity: 1; transform: translateY(0); } }
-        .lrc-anim-fall { display:inline-block; opacity:0; transform:translateY(-40px); animation:lrc-fall-in .8s cubic-bezier(.22,1,.36,1) forwards; }
-        @keyframes lrc-fall-in { 0%{opacity:0;transform:translateY(-40px)} 100%{opacity:1;transform:translateY(0)} }
-        .lrc-trans-fade { opacity:0; animation:lrc-trans-fade-in .8s cubic-bezier(.22,1,.36,1) forwards; }
-        @keyframes lrc-trans-fade-in { 0%{opacity:0} 100%{opacity:1} }
-        @keyframes lrc-fade-out { 0%{opacity:1;transform:scale(1)} 100%{opacity:0;transform:scale(.95)} }
-        .lrc-highlight { color:#ff4d4f !important; text-shadow:0 0 8px rgba(255,77,79,.6),0 2px 4px rgba(0,0,0,.5) !important; }
-        .fm-out-lyrics-scroll {
-            position: relative;
-            width: max-content; max-width: 80vw; min-width: 60px;
-            height: calc(var(--fm-lrc-font, 16px) * 5.4);
-            max-height: 40dvh; overflow: hidden; box-sizing: border-box;
-            pointer-events: none;
-            opacity: 0; transition: opacity .5s;
-            -webkit-mask-image: linear-gradient(to bottom, transparent 0%, black 30%, black 70%, transparent 100%);
-            mask-image: linear-gradient(to bottom, transparent 0%, black 30%, black 70%, transparent 100%);
-        }
-        .fm-out-lyrics-scroll.show { opacity: 1; }
-        .fm-lrc-scroll-list { display:flex; flex-direction:column; align-items:center; transition:transform .45s cubic-bezier(.25,.8,.25,1); }
-        .fm-lrc-scroll-line { font-size:var(--fm-lrc-font,16px); line-height:1.8; color:var(--fm-text-sub); opacity:.35; text-align:center; text-shadow:0 2px 8px var(--fm-shadow); white-space:nowrap; padding:2px 10px; transition:opacity .4s,color .4s,font-size .4s; }
-        .fm-lrc-scroll-line.near { opacity:.6; }
-        .fm-lrc-scroll-line.current { color:var(--fm-accent); font-weight:bold; opacity:1; font-size:calc(var(--fm-lrc-font,16px) * 1.15); }
-    `;
-    lyricShadow.appendChild(lyricStyle);
-    const lyricOut = UI.outLyrics;
-    const lyricScroll = UI.outLyricsScroll;
-    const lyricScrollList = UI.outLyricsScrollList;
-    lyricShadow.appendChild(lyricOut);
-    lyricShadow.appendChild(lyricScroll);
-    UI.outLyrics = lyricOut;
-    UI.outLyricsScroll = lyricScroll;
-    UI.outLyricsScrollList = lyricScrollList;
-    UI.lyricHost = lyricHost;
-    UI.lyricShadow = lyricShadow;
-
-    const syncLyricHostVars = () => {
-        const names = ['--fm-font','--fm-lrc-font','--fm-lrc-bottom','--fm-lrc-family','--fm-bg','--fm-text-main','--fm-text-sub','--fm-accent','--fm-border','--fm-shadow'];
-        const cs = targetWin.getComputedStyle(UI.wrapper);
-        names.forEach((name) => {
-            const value = cs.getPropertyValue(name).trim();
-            if (value) lyricHost.style.setProperty(name, value);
-        });
-    };
-    syncLyricHostVars();
-
     // ================= 桌面歌词字体 =================
     // 只接受用户主动提供的 ZeoSeven 字体详情页 / FontsAPI URL。
     // 不抓取整个字体网站，也不维护庞大的在线字体目录，避免 WebView 卡顿。
@@ -1281,7 +1149,6 @@
         const family = font?.family || '';
         const safeFamily = family ? `"${family.replace(/"/g,'\\"')}"` : '';
         UI.wrapper.style.setProperty('--fm-lrc-family', safeFamily || 'var(--fm-font)');
-        if (UI.lyricHost) UI.lyricHost.style.setProperty('--fm-lrc-family', safeFamily || 'var(--fm-font)');
         const lyricRoots = [UI.outLyrics, UI.outLyricsScroll, UI.outLyricsScrollList].filter(Boolean);
         lyricRoots.forEach(root => {
             root.style.setProperty('font-family', safeFamily || 'var(--fm-font)', 'important');
@@ -1399,12 +1266,18 @@
 
     UI.lrcFontReset?.addEventListener('click', resetLrcFontToDefault);
 
-    // 启动时只恢复视觉设置；真正的远程字体加载延迟到播放器打开后。
-    const savedLrcFont = getSavedLrcFont();
-    setLrcFontVisual(savedLrcFont || null);
-
-    // 性能优化：不再持续监听歌词 DOM。歌词更新时由现有渲染逻辑主动应用字体，
-    // 避免每次歌词节点变化都触发一次额外的 MutationObserver 回调。
+    // 自定义歌词字体不在酒馆启动阶段请求。
+    // 第一次打开播放器时再恢复，避免脚本加载阶段产生网络请求与字体解析。
+    const restoreSavedLrcFontWhenOpened = () => {
+        const savedLrcFont = getSavedLrcFont();
+        if (savedLrcFont) {
+            ensureZeoFontLoaded(savedLrcFont).then(ok => {
+                if (ok) setLrcFontVisual(savedLrcFont);
+            });
+        } else {
+            setLrcFontVisual(null);
+        }
+    };
 
     // ================= 页面导航 =================
     UI.themeDots.forEach(dot => dot.classList.toggle('active', dot.dataset.theme === STATE.currentTheme));
@@ -1531,20 +1404,21 @@
         const currentSize = parseInt(savedSettings.ballSize) || 50;
         
         if (STATE.isExpanded) {
-            container.style.display = 'block';
-            UI.panel.style.display = 'flex';
-            applySettings();
-            const activeLrcFont = getSavedLrcFont();
-            if (activeLrcFont) {
-                ensureZeoFontLoaded(activeLrcFont).then(ok => {
-                    if (ok && STATE.isExpanded) setLrcFontVisual(activeLrcFont);
-                });
-            }
-
-            if (!STATE.uiInitialized || STATE.uiNeedsRender) {
-                renderListUI();
+            preparePlaylistsForUI();
+            if (!STATE.uiInitialized) {
                 STATE.uiInitialized = true;
+                initDraggable();
+                initProgressBar();
+                renderListUI();
+                restoreSavedLrcFontWhenOpened();
+                if (startupDedupeCount > 0 || startupLimitCount > 0) {
+                    let msg = `[优化] 启动清理完成：`;
+                    if (startupDedupeCount > 0) msg += `移除 ${startupDedupeCount} 首重复歌曲。`;
+                    if (startupLimitCount > 0) msg += `截断 ${startupLimitCount} 首超出容量限制的歌曲。`;
+                    API.toast(msg);
+                }
             }
+            applySettings(); 
             
             // 使用实际 CSS 宽度，避免小屏 max-width 与 JS 估算不一致。
             const panelWidth = Math.min(UI.panel.offsetWidth || 400, targetWin.innerWidth - CONFIG.SAFE_MARGIN * 2);
@@ -1595,10 +1469,6 @@
             UI.panel.classList.add('open');
         } else {
             UI.panel.classList.remove('open');
-            UI.panel.style.display = 'none';
-            // 关闭后如果悬浮球也隐藏，则整个播放器宿主退出渲染树。
-            container.style.display = savedSettings.showBall === false ? 'none' : 'block';
-            STATE.uiNeedsRender = false;
             UI.ball.innerHTML = '<i class="fas fa-music"></i>';
             if (STATE.isPlaying) UI.ball.classList.add('playing');
         }
@@ -1978,11 +1848,6 @@
     }
 
     function renderListUI() {
-        if (!STATE.isExpanded) {
-            STATE.uiNeedsRender = true;
-            return;
-        }
-        STATE.uiNeedsRender = false;
         renderTabs();
         UI.playlistEl.innerHTML = '';
 
@@ -2162,10 +2027,8 @@
         renderListUI();
 
         audio.pause(); audio.src = '';
-        STATE.lyricsData = []; UI.outLyrics.innerHTML = ''; UI.outLyricsScrollList.innerHTML = ''; STATE.lastActiveLrcIndex = -1; STATE.lastRenderedScrollIndex = -1;
-        STATE.lastRenderedScrollIndex = -1;
+        STATE.lyricsData = []; UI.outLyrics.innerHTML = ''; UI.outLyricsScrollList.innerHTML = ''; STATE.lastActiveLrcIndex = -1;
         if (lrcRafId) cancelAnimationFrame(lrcRafId);
-        stopLyricsTimer();
         updateProgressUI(0, 0);
 
         if (!track.url) {
@@ -2222,8 +2085,7 @@
                     parseLyric(lrcData.lyric, lrcData.tlyric);
                     buildScrollLyricsDom(); 
                     if (lrcRafId) cancelAnimationFrame(lrcRafId);
-                    stopLyricsTimer();
-                    if (STATE.isLyricsVisible && !audio.paused) { updateLyrics(); scheduleLyricsUpdate(); }
+                    if (STATE.isLyricsVisible && !audio.paused) updateLyrics();
                 }
             }
         } else {
@@ -2300,18 +2162,11 @@
     function renderScrollActiveLine(activeIdx) {
         const lineEls = UI.outLyricsScrollList.children;
         if (lineEls.length === 0) return;
-        const prev = STATE.lastRenderedScrollIndex;
-        // 只清理上一行附近的状态，再设置当前行附近状态。
-        // 原版每换一句都会遍历整首歌词的所有 DOM 节点；长歌单/长歌词时没有必要。
-        [prev - 1, prev, prev + 1, activeIdx - 1, activeIdx, activeIdx + 1].forEach(i => {
-            if (i >= 0 && i < lineEls.length) lineEls[i].classList.remove('current', 'near');
-        });
-        [-1, 0, 1].forEach(delta => {
-            const i = activeIdx + delta;
-            if (i < 0 || i >= lineEls.length) return;
-            lineEls[i].classList.add(delta === 0 ? 'current' : 'near');
-        });
-        STATE.lastRenderedScrollIndex = activeIdx;
+        for (let i = 0; i < lineEls.length; i++) {
+            lineEls[i].classList.remove('current', 'near');
+            if (i === activeIdx) lineEls[i].classList.add('current');
+            else if (Math.abs(i - activeIdx) === 1) lineEls[i].classList.add('near');
+        }
         const activeLine = lineEls[activeIdx];
         if (!activeLine) return;
         const containerHeight = UI.outLyricsScroll.clientHeight;
@@ -2329,11 +2184,9 @@
         // 随机掉落模式下，提前 0.8 秒触发下一句，实现交叠效果
         const effectiveTime = ct + (isFallMode ? 0.8 : 0);
         
-        let lo = 0, hi = STATE.lyricsData.length - 1, activeIdx = -1;
-        while (lo <= hi) {
-            const mid = (lo + hi) >> 1;
-            if (effectiveTime >= STATE.lyricsData[mid].time) { activeIdx = mid; lo = mid + 1; }
-            else hi = mid - 1;
+        let activeIdx = -1;
+        for (let i = STATE.lyricsData.length - 1; i >= 0; i--) {
+            if (effectiveTime >= STATE.lyricsData[i].time) { activeIdx = i; break; }
         }
 
         if (activeIdx !== -1 && activeIdx !== STATE.lastActiveLrcIndex) {
@@ -2492,34 +2345,6 @@
         lrcRafId = null;
     }
 
-    function stopLyricsTimer() {
-        if (lrcTimerId) { clearTimeout(lrcTimerId); lrcTimerId = null; }
-    }
-
-    function scheduleLyricsUpdate() {
-        stopLyricsTimer();
-        if (!STATE.isLyricsVisible || audio.paused || STATE.lyricsData.length === 0) return;
-        const ct = audio.currentTime;
-        const offset = savedSettings.lrcMode === 'fall' ? 0.8 : 0;
-        const effectiveTime = ct + offset;
-        let lo = 0, hi = STATE.lyricsData.length - 1, activeIdx = -1;
-        while (lo <= hi) {
-            const mid = (lo + hi) >> 1;
-            if (effectiveTime >= STATE.lyricsData[mid].time) { activeIdx = mid; lo = mid + 1; }
-            else hi = mid - 1;
-        }
-        const nextIdx = activeIdx + 1;
-        if (nextIdx >= STATE.lyricsData.length) return;
-        const nextAt = STATE.lyricsData[nextIdx].time - offset;
-        const delay = Math.max(20, (nextAt - ct) * 1000);
-        lrcTimerId = setTimeout(() => {
-            lrcTimerId = null;
-            if (!STATE.isLyricsVisible || audio.paused) return;
-            updateLyrics();
-            scheduleLyricsUpdate();
-        }, delay);
-    }
-
     // ================= 事件绑定 =================
     
     UI.closeBtn.onclick = togglePanel;
@@ -2564,7 +2389,6 @@
         } else if (!audio.paused) {
             STATE.lastActiveLrcIndex = -1;
             updateLyrics();
-            scheduleLyricsUpdate();
         }
     };
 
@@ -2577,10 +2401,9 @@
         savedSettings.lrcMode = 'plain';
         updateLrcModeBtns();
         STATE.lastActiveLrcIndex = -1;
-        STATE.lastRenderedScrollIndex = -1;
         if (lrcRafId) { cancelAnimationFrame(lrcRafId); lrcRafId = null; }
         syncLyricsVisibility();
-        if (STATE.isLyricsVisible && !audio.paused) { updateLyrics(); scheduleLyricsUpdate(); }
+        if (STATE.isLyricsVisible && !audio.paused) updateLyrics();
         applySettings();
     };
 
@@ -2589,9 +2412,8 @@
         savedSettings.lrcMode = 'popup';
         updateLrcModeBtns();
         STATE.lastActiveLrcIndex = -1;
-        STATE.lastRenderedScrollIndex = -1;
         syncLyricsVisibility();
-        if (STATE.isLyricsVisible && !audio.paused) { updateLyrics(); scheduleLyricsUpdate(); }
+        if (STATE.isLyricsVisible && !audio.paused) updateLyrics();
         applySettings();
     };
     UI.lrcModeScrollBtn.onclick = () => {
@@ -2599,10 +2421,9 @@
         savedSettings.lrcMode = 'scroll';
         updateLrcModeBtns();
         STATE.lastActiveLrcIndex = -1;
-        STATE.lastRenderedScrollIndex = -1;
         syncLyricsVisibility();
         if (STATE.lyricsData.length > 0) buildScrollLyricsDom();
-        if (STATE.isLyricsVisible && !audio.paused) { updateLyrics(); scheduleLyricsUpdate(); }
+        if (STATE.isLyricsVisible && !audio.paused) updateLyrics();
         applySettings();
     };
     UI.lrcModeFallBtn.onclick = () => {
@@ -2610,9 +2431,8 @@
         savedSettings.lrcMode = 'fall';
         updateLrcModeBtns();
         STATE.lastActiveLrcIndex = -1;
-        STATE.lastRenderedScrollIndex = -1;
         syncLyricsVisibility();
-        if (STATE.isLyricsVisible && !audio.paused) { updateLyrics(); scheduleLyricsUpdate(); }
+        if (STATE.isLyricsVisible && !audio.paused) updateLyrics();
         applySettings();
     };
 
@@ -2741,7 +2561,7 @@
             dot.classList.add('active');
             STATE.currentTheme = dot.dataset.theme;
             savedSettings.theme = STATE.currentTheme;
-            UI.wrapper.className = `fm-player-root theme-${STATE.currentTheme}`;
+            UI.wrapper.className = `theme-${STATE.currentTheme}`;
             
             // 切换主题时，恢复该主题的默认强调色
             const defColor = THEME_DEFAULT_COLORS[STATE.currentTheme];
@@ -2858,8 +2678,6 @@
         UI.wrapper.style.setProperty('--fm-ball-size', `${savedSettings.ballSize}px`);
         UI.ballVisibleToggle.checked = savedSettings.showBall !== false;
         UI.wrapper.classList.toggle('ball-hidden', savedSettings.showBall === false);
-        // 隐藏悬浮球且播放器关闭时，连根宿主都从渲染树中拿掉。打开时再恢复。
-        if (!STATE.isExpanded) container.style.display = savedSettings.showBall === false ? 'none' : 'block';
         UI.wrapper.style.setProperty('--fm-custom-color', savedSettings.customColor);
         
         if (savedSettings.shapeStyle === 'square') {
@@ -2889,7 +2707,6 @@
         UI.wrapper.style.setProperty('--fm-bg-brightness', `${savedSettings.bgBrightness}%`);
         UI.wrapper.style.setProperty('--fm-lrc-font', `${savedSettings.lrcFont}px`);
         UI.wrapper.style.setProperty('--fm-lrc-bottom', `${savedSettings.lrcBottom}px`);
-        syncLyricHostVars();
         const savedLrcFont = getSavedLrcFont();
         if (savedLrcFont) {
             ensureZeoFontLoaded(savedLrcFont).then((ok) => {
@@ -3057,32 +2874,21 @@
         UI.playBtn.innerHTML = '<i class="fas fa-pause"></i>';
         UI.ball.classList.add('playing');
         if (lrcRafId) cancelAnimationFrame(lrcRafId);
-        stopLyricsTimer();
         updateLyrics();
-        scheduleLyricsUpdate();
     };
     audio.onpause = () => {
         STATE.isPlaying = false;
         UI.playBtn.innerHTML = '<i class="fas fa-play"></i>';
         UI.ball.classList.remove('playing');
         if (lrcRafId) cancelAnimationFrame(lrcRafId);
-        stopLyricsTimer();
     };
     audio.onended = () => {
         if (STATE.playMode === 'repeat_one') { audio.currentTime = 0; audio.play(); }
         else playNext();
     };
-    let progressRafId = null;
     audio.ontimeupdate = () => {
-        // 歌词同步由 scheduleLyricsUpdate 单独负责；这里仅处理播放器进度。
-        // 使用 RAF 合并短时间内连续的 timeupdate，避免与 ST 生成/滚动争抢主线程。
-        if (!STATE.isExpanded || STATE.isSeekingProgress || progressRafId) return;
-        progressRafId = requestAnimationFrame(() => {
-            progressRafId = null;
-            if (STATE.isExpanded && !STATE.isSeekingProgress) {
-                updateProgressUI(audio.currentTime, audio.duration);
-            }
-        });
+        if (!STATE.isSeekingProgress) updateProgressUI(audio.currentTime, audio.duration);
+        if (STATE.isLyricsVisible) updateLyrics();
     };
     audio.onloadedmetadata = () => { if (!STATE.isSeekingProgress) updateProgressUI(audio.currentTime, audio.duration); };
     audio.onerror = () => {
@@ -3140,16 +2946,8 @@
     }
 
     // ================= 初始化 =================
-    initDraggable();
-    initProgressBar();
-    // 不在脚本加载阶段构建歌单 DOM；第一次打开播放器时再渲染。
-    
-    if (startupDedupeCount > 0 || startupLimitCount > 0) {
-        let msg = `[优化] 启动清理完成：`;
-        if (startupDedupeCount > 0) msg += `移除 ${startupDedupeCount} 首重复歌曲。`;
-        if (startupLimitCount > 0) msg += `截断 ${startupLimitCount} 首超出容量限制的歌曲。`;
-        API.toast(msg);
-    }
+    // 这里故意不初始化播放器 UI、进度条、歌单 DOM 或自定义字体。
+    // 它们全部延迟到第一次真正打开播放器时执行。
     
     targetWin._flowMusicToggle = () => {
         savedSettings.showBall = savedSettings.showBall === false;
@@ -3162,48 +2960,22 @@
 
     // SillyTavern 的输入框扩展菜单（扳手/魔法棒菜单）只需要放一个入口，
     // 点击入口后打开播放器自己的完整面板，不把播放器 UI 塞进菜单。
-    let menuRetryTimer = null;
-    let menuRetryStopTimer = null;
     if (!installSillyTavernWandButton()) {
-        menuRetryTimer = setInterval(() => {
-            if (installSillyTavernWandButton()) {
-                clearInterval(menuRetryTimer);
-                menuRetryTimer = null;
+        setTimeout(() => {
+            if (!installSillyTavernWandButton()) {
+                setTimeout(() => installSillyTavernWandButton(), 2000);
             }
-        }, 500);
-        menuRetryStopTimer = setTimeout(() => {
-            if (menuRetryTimer) clearInterval(menuRetryTimer);
-            menuRetryTimer = null;
-            menuRetryStopTimer = null;
-        }, 15000);
+        }, 800);
     }
 
-    // 实例级清理：更新/重装脚本时先清理上一实例，防止 audio、pagehide、计时器和独立歌词层累积。
-    const cleanupPlayerInstance = () => {
-        try { if (audio) { audio.pause(); audio.src = ''; audio = null; } } catch (_) {}
-        try { if (lrcRafId) cancelAnimationFrame(lrcRafId); } catch (_) {}
-        try { if (progressRafId) cancelAnimationFrame(progressRafId); progressRafId = null; } catch (_) {}
-        try { stopLyricsTimer(); } catch (_) {}
-        try { clearTimeout(settingsSaveTimer); } catch (_) {}
-        try { if (menuRetryTimer) clearInterval(menuRetryTimer); } catch (_) {}
-        try { if (menuRetryStopTimer) clearTimeout(menuRetryStopTimer); } catch (_) {}
-        try { saveSettings(); } catch (_) {}
-        try { targetDoc.querySelectorAll('link[id^="fm-zeofont-"]').forEach(link => link.remove()); } catch (_) {}
-        try { targetDoc.querySelectorAll('link[id^="fm-zeofont-inspect-"]').forEach(link => link.remove()); } catch (_) {}
-        try {
-            const c = targetDoc.getElementById(CONFIG.ID);
-            if (c) c.remove();
-            const oldLyrics = targetDoc.getElementById('apv-lyrics-host');
-            if (oldLyrics) oldLyrics.remove();
-            const menuItem = targetDoc.getElementById('arv_terminal_wand_container');
-            if (menuItem) menuItem.remove();
-        } catch (_) {}
-        try { delete targetWin._flowMusicToggle; } catch (_) {}
-        if (targetWin.__apvPlayerCleanup === cleanupPlayerInstance) {
-            try { delete targetWin.__apvPlayerCleanup; } catch (_) {}
-        }
-    };
-    targetWin.__apvPlayerCleanup = cleanupPlayerInstance;
-    targetWin.addEventListener('pagehide', cleanupPlayerInstance, { once: true });
+    targetWin.addEventListener('pagehide', () => {
+        if (audio) { audio.pause(); audio.src = ''; audio = null; }
+        if (lrcRafId) cancelAnimationFrame(lrcRafId);
+        saveSettings();
+        clearTimeout(settingsSaveTimer);
+        const c = targetDoc.getElementById(CONFIG.ID);
+        if (c) c.remove();
+        delete targetWin._flowMusicToggle;
+    });
 
 })();
