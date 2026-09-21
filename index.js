@@ -1,92 +1,3017 @@
-/* ApV播放器｜半重做·轻量运行版
- * 单文件版：播放器运行核心内嵌，不依赖第二个 JS 文件。
- * 启动阶段只注册酒馆入口；第一次点击才执行播放器核心。
- */
 (async function () {
-    'use strict';
+    // 获取宿主环境 document
     let targetDoc = document;
     let targetWin = window;
     try {
-        if (window.parent && window.parent !== window && window.parent.document && window.parent.innerWidth > 0 && window.parent.innerHeight > 0) {
+        if (
+            window.parent &&
+            window.parent !== window &&
+            window.parent.document &&
+            window.parent.innerWidth > 0 &&
+            window.parent.innerHeight > 0
+        ) {
             targetDoc = window.parent.document;
             targetWin = window.parent;
         }
-    } catch (_) {}
+    } catch (e) {
+        console.warn("[АрⅤ] 跨域限制，降级至当前环境。");
+    }
 
-    const MENU_ID = 'arv_terminal_wand_container';
-    const ITEM_ID = 'arvTerminalExtensionMenuItem';
-    const RUNTIME_SOURCE = "(async function () {\n    // 获取宿主环境 document\n    let targetDoc = document;\n    let targetWin = window;\n    try {\n        if (\n            window.parent &&\n            window.parent !== window &&\n            window.parent.document &&\n            window.parent.innerWidth > 0 &&\n            window.parent.innerHeight > 0\n        ) {\n            targetDoc = window.parent.document;\n            targetWin = window.parent;\n        }\n    } catch (e) {\n        console.warn(\"[АрⅤ] 跨域限制，降级至当前环境。\");\n    }\n\n    // ================= 核心配置 =================\n    const CONFIG = {\n        ID: 'st-flow-music-player-pro',\n        Z_INDEX: 2147483640,\n        SAFE_MARGIN: 20, // 增加安全边距，防止贴边太紧\n        DEFAULT_THEME: 'adaptive',\n        STORAGE_KEY: 'apv_terminal_playlist_data',\n        SETTINGS_KEY: 'apv_terminal_settings',\n        MAX_TRACKS_PER_LIST: 1000 // 防卡死：单列表最大歌曲数\n    };\n\n    // 尝试读取本地存储的歌单\n    let savedPlaylists = [{ id: 'default', name: '默认列表', tracks: [] }];\n    try {\n        const saved = localStorage.getItem(CONFIG.STORAGE_KEY);\n        if (saved) {\n            const parsed = JSON.parse(saved);\n            if (Array.isArray(parsed)) {\n                if (parsed.length > 0 && parsed[0].tracks) {\n                    savedPlaylists = parsed;\n                } else {\n                    savedPlaylists[0].tracks = parsed;\n                }\n            }\n        }\n    } catch (e) { console.warn(\"读取本地歌单失败\", e); }\n\n    // 容错：避免损坏的本地数据导致初始化阶段直接崩溃。\n    savedPlaylists = Array.isArray(savedPlaylists) ? savedPlaylists\n        .filter(p => p && typeof p === 'object')\n        .map((p, i) => ({\n            id: String(p.id || (i === 0 ? 'default' : `pl_${Date.now()}_${i}`)),\n            name: String(p.name || (i === 0 ? '默认列表' : `歌单 ${i + 1}`)),\n            description: String(p.description || ''),\n            cover: typeof p.cover === 'string' ? p.cover : '',\n            color: /^#[0-9a-fA-F]{6}$/.test(String(p.color || '')) ? String(p.color) : '',\n            tracks: Array.isArray(p.tracks) ? p.tracks.filter(Boolean) : []\n        })) : [];\n    if (!savedPlaylists.length || savedPlaylists[0].id !== 'default') {\n        savedPlaylists.unshift({ id: 'default', name: '默认列表', description: '', cover: '', color: '', tracks: [] });\n    }\n\n    // 防卡死：严格去重与容量限制\n    function trackDedupeKey(t) {\n        const idPart = t.rawId || t.lyricId || '';\n        return `${t.source || ''}::${idPart}::${(t.title || '').trim()}::${(t.artist || '').trim()}`.toLowerCase();\n    }\n\n    // API/本地数据可能包含 HTML 特殊字符；渲染前统一转义，避免破坏播放器 DOM。\n    function escapeHTML(value) {\n        return String(value ?? '')\n            .replace(/&/g, '&amp;')\n            .replace(/</g, '&lt;')\n            .replace(/>/g, '&gt;')\n            .replace(/\"/g, '&quot;')\n            .replace(/'/g, '&#39;');\n    }\n    \n    function dedupeAndLimitTracks(tracks) {\n        const seen = new Set();\n        const result = [];\n        for (const t of tracks) {\n            if (result.length >= CONFIG.MAX_TRACKS_PER_LIST) break; // 触发容量限制\n            const key = trackDedupeKey(t);\n            if (seen.has(key)) continue;\n            seen.add(key);\n            result.push(t);\n        }\n        return result;\n    }\n\n    // 启动阶段不再扫描/去重整份歌单数据。\n    // 大歌单的整理延迟到用户第一次打开播放器时执行，避免拖慢酒馆启动。\n    let startupDedupeCount = 0;\n    let startupLimitCount = 0;\n    let playlistsPrepared = false;\n    function preparePlaylistsForUI() {\n        if (playlistsPrepared) return;\n        playlistsPrepared = true;\n        savedPlaylists.forEach(list => {\n            const before = list.tracks.length;\n            list.tracks = dedupeAndLimitTracks(list.tracks);\n            const removed = before - list.tracks.length;\n            if (removed > 0) {\n                if (before > CONFIG.MAX_TRACKS_PER_LIST) {\n                    startupLimitCount += (before - CONFIG.MAX_TRACKS_PER_LIST);\n                    startupDedupeCount += Math.max(0, removed - (before - CONFIG.MAX_TRACKS_PER_LIST));\n                } else {\n                    startupDedupeCount += removed;\n                }\n            }\n        });\n        STATE.playlists = savedPlaylists;\n        if (startupDedupeCount > 0 || startupLimitCount > 0) {\n            try { localStorage.setItem(CONFIG.STORAGE_KEY, JSON.stringify(savedPlaylists)); } catch (e) {}\n        }\n    }\n\n    // 读取本地设置\n    let savedSettings = { \n        ballSize: 50, customColor: '#4a90e2', bgImage: '', bgImageWidth: 0, bgImageHeight: 0, \n        bgBlur: 10, bgBrightness: 70, lrcMode: 'popup', lrcFont: 16, lrcBottom: 80, lrcFontName: '默认字体', lrcFontFamily: '', lrcFontCss: '', lrcFontId: '', lrcFontUrl: '', \n        panelRatio: 'default', shapeStyle: 'round', theme: 'adaptive',\n        nowCoverImage: '', nowPlayingLabel: 'NOW PLAYING', showBall: true\n    };\n    try {\n        const s = localStorage.getItem(CONFIG.SETTINGS_KEY);\n        if (s) savedSettings = { ...savedSettings, ...JSON.parse(s) };\n    } catch(e) {}\n    // 旧版本的字体设置仅作兼容清理，不再参与任何功能。\n    delete savedSettings.customFont;\n\n    // ================= 状态管理 =================\n    const STATE = {\n        isVisible: true,\n        isExpanded: false,\n        isPlaying: false,\n        currentTheme: savedSettings.theme || CONFIG.DEFAULT_THEME,\n        playMode: 'repeat_all',\n        playlists: savedPlaylists,\n        currentPlaylistId: savedPlaylists[0].id,\n        playingPlaylistId: savedPlaylists[0].id,\n        searchResults: [],\n        currentInputMode: 'netease',\n        isShowingSearch: false,\n        isPlaylistHome: true,\n        localSearchKeyword: '', \n        currentIndex: -1,\n        lyricsData: [],\n        isLyricsVisible: true,\n        lastActiveLrcIndex: -1,\n        isSeekingProgress: false,\n        playRequestId: 0,\n        uiInitialized: false\n    };\n\n    const getCurrentPlaylist = () => STATE.playlists.find(p => p.id === STATE.currentPlaylistId) || STATE.playlists[0];\n    const getPlayingPlaylist = () => STATE.playlists.find(p => p.id === STATE.playingPlaylistId) || STATE.playlists[0];\n\n    let audio = new targetWin.Audio();\n    let lrcRafId = null;\n\n    const DEFAULT_PLAYLIST_COLORS = ['#4a90e2', '#9b59b6', '#e67e22', '#2ecc71', '#e74c3c', '#1abc9c'];\n    const getPlaylistColor = (playlist) => playlist?.color || savedSettings.customColor || '#4a90e2';\n    const renderPlaylistCover = (container, playlist, className = '') => {\n        if (!container) return;\n        container.replaceChildren();\n        if (playlist?.cover) {\n            const img = targetDoc.createElement('img');\n            img.src = playlist.cover;\n            img.alt = '';\n            img.draggable = false;\n            container.appendChild(img);\n        } else {\n            const icon = targetDoc.createElement('i');\n            icon.className = playlist?.id === 'default' ? 'fas fa-music' : 'fas fa-compact-disc';\n            container.appendChild(icon);\n        }\n        if (className) container.classList.add(className);\n    };\n\n    function editPlaylistName(playlist) {\n        const name = targetWin.prompt('请输入新的歌单名称：', playlist.name);\n        if (!name || !name.trim()) return;\n        playlist.name = name.trim().slice(0, 40);\n        savePlaylist();\n        renderListUI();\n        API.toast('歌单名称已更新');\n    }\n\n    function editPlaylistDescription(playlist) {\n        const desc = targetWin.prompt('请输入歌单简介（可留空）：', playlist.description || '');\n        if (desc === null) return;\n        playlist.description = desc.trim().slice(0, 160);\n        savePlaylist();\n        renderListUI();\n        API.toast('歌单简介已更新');\n    }\n\n    function editPlaylistColor(playlist) {\n        const input = targetDoc.createElement('input');\n        input.type = 'color';\n        input.value = getPlaylistColor(playlist);\n        input.style.position = 'fixed';\n        input.style.left = '-9999px';\n        input.style.top = '0';\n        input.style.opacity = '0';\n        targetDoc.body.appendChild(input);\n        input.onchange = () => {\n            playlist.color = input.value;\n            savePlaylist();\n            renderListUI();\n            API.toast('歌单颜色已更新');\n            input.remove();\n        };\n        input.onblur = () => setTimeout(() => input.remove(), 100);\n        input.click();\n    }\n\n    function editPlaylistCover(playlist) {\n        const input = targetDoc.createElement('input');\n        input.type = 'file';\n        input.accept = 'image/*';\n        input.style.display = 'none';\n        targetDoc.body.appendChild(input);\n        input.onchange = async () => {\n            const file = input.files?.[0];\n            if (!file) { input.remove(); return; }\n            try {\n                playlist.cover = await readSmallImage(file, 320);\n                savePlaylist();\n                renderListUI();\n                API.toast('歌单封面已更新');\n            } catch (err) {\n                API.toast(err?.message === 'TOO_LARGE' ? '图片原文件太大，请选择 8MB 以内的图片。' : '图片读取失败，请换一张图片重试。');\n            } finally {\n                input.remove();\n            }\n        };\n        input.click();\n    }\n\n    function clearPlaylistCover(playlist) {\n        playlist.cover = '';\n        savePlaylist();\n        renderListUI();\n        API.toast('已恢复默认歌单封面');\n    }\n\n    // ================= API 封装 =================\n    const API = {\n        toast(msg) {\n            if (typeof triggerSlash === 'function') {\n                const safeMsg = msg.replace(/(\\\\+)?([|{}])/g, (m, s, c) => (s || '') + (s || '') + '\\\\' + c);\n                triggerSlash(`/echo severity=info [播放器测试] ${safeMsg}`);\n            } else {\n                console.log(`[播放器测试] ${msg}`);\n            }\n        },\n        _extractArray(data) {\n            if (Array.isArray(data)) return data;\n            if (data && typeof data === 'object') {\n                if (Array.isArray(data.data)) return data.data;\n                if (Array.isArray(data.list)) return data.list;\n                if (data.data && Array.isArray(data.data.list)) return data.data.list;\n                if (data.url || data.title || data.name) return [data];\n            }\n            return [];\n        },\n        _mapTrack(t, source) {\n            const idFromUrl = (t.url || t.lrc || t.pic || '').match(/[?&]id=([^&]+)/);\n            const extractedId = idFromUrl ? decodeURIComponent(idFromUrl[1]) : '';\n            return {\n                title: t.name || t.title || t.songName || '未知歌曲',\n                artist: t.artist || t.author || t.singer || (Array.isArray(t.ar) ? t.ar.map(a=>a.name).join('/') : '未知歌手'),\n                rawId: t.id || t.songId || t.mid || extractedId || '',\n                lyricId: t.lyric_id || t.lyricId || t.id || t.songId || t.mid || extractedId || '',\n                lrcUrl: t.lrc || null, \n                url: t.url || t.src || t.playUrl || null, \n                pic: t.pic || t.cover || t.img || null,\n                source: source\n            };\n        },\n        async _fetchJson(rawUrl, isUsable = data => data != null) {\n            try {\n                const res = await fetch(rawUrl);\n                const data = await res.json();\n                if (isUsable(data)) return data;\n            } catch (e) {}\n            const res = await fetch(`https://corsproxy.io/?${encodeURIComponent(rawUrl)}`);\n            return await res.json();\n        },\n        async parsePlaylist(inputVal, source) {\n            try {\n                const idMatch = inputVal.match(/id=(\\d+)/i) || inputVal.match(/\\/(\\d+)(?:\\?|$)/);\n                const targetId = idMatch ? idMatch[1] : inputVal;\n                const rawUrl = `https://api.injahow.cn/meting/?server=${source}&type=playlist&id=${targetId}`;\n                const data = await this._fetchJson(rawUrl, data => this._extractArray(data).length > 0);\n                return this._extractArray(data).map(t => this._mapTrack(t, source));\n            } catch (e) {\n                return [];\n            }\n        },\n        async searchTrack(keyword) {\n            const safeKeyword = encodeURIComponent(keyword.trim());\n            const rawUrl = `https://music-api.gdstudio.xyz/api.php?types=search&source=netease&name=${safeKeyword}&count=15&pages=1`;\n            try {\n                const data = await this._fetchJson(rawUrl, data => Array.isArray(data) && data.length > 0);\n                return Array.isArray(data) ? data.map(t => ({\n                    title: t.name,\n                    artist: Array.isArray(t.artist) ? t.artist.join('/') : t.artist,\n                    id: t.id,\n                    lyricId: t.lyric_id || t.id,\n                    source: t.source || 'netease'\n                })) : [];\n            } catch (e) {\n                return [];\n            }\n        },\n        async fillTrackInfo(title, artist) {\n            const keyword = encodeURIComponent(`${title} ${artist}`.trim());\n            const rawUrl = `https://music-api.gdstudio.xyz/api.php?types=search&source=netease&name=${keyword}&count=1&pages=1`;\n            try {\n                const data = await this._fetchJson(rawUrl, data => Array.isArray(data) && data.length > 0);\n                return Array.isArray(data) && data.length > 0 ? data[0] : null;\n            } catch (e) {\n                return null;\n            }\n        },\n        async getUrl(source, id) {\n            const rawUrl = `https://music-api.gdstudio.xyz/api.php?types=url&source=${source}&id=${id}&br=320`;\n            try {\n                const data = await this._fetchJson(rawUrl, data => !!data?.url);\n                return data?.url || null;\n            } catch (e) {\n                return null;\n            }\n        },\n        async getLyric(source, id) {\n            const rawUrl = `https://music-api.gdstudio.xyz/api.php?types=lyric&source=${source}&id=${id}`;\n            try {\n                return await this._fetchJson(rawUrl, data => !!data?.lyric);\n            } catch (e) {\n                return { __error: e.message || String(e) };\n            }\n        },\n        async getLyricByUrl(url) {\n            try {\n                return await this._fetchJson(url, data => !!data?.lyric);\n            } catch (e) {\n                return { __error: e.message || String(e) };\n            }\n        }\n    };\n\n    // 防卡死：保存歌单时捕获异常\n    const savePlaylist = () => {\n        try {\n            localStorage.setItem(CONFIG.STORAGE_KEY, JSON.stringify(STATE.playlists, (key, value) => {\n                if (key === '__retriedOnError') return undefined;\n                return value;\n            }));\n        } catch (e) { \n            console.warn(\"保存歌单失败\", e); \n            if (e.name === 'QuotaExceededError' || e.name === 'NS_ERROR_DOM_QUOTA_REACHED') {\n                API.toast(\"⚠️ 存储空间已满！请清理不必要的歌单或歌曲，以防脚本卡死。\");\n            }\n        }\n    };\n\n    // ================= UI 构建 =================\n    const oldContainer = targetDoc.getElementById(CONFIG.ID);\n    if (oldContainer) oldContainer.remove();\n\n    const container = targetDoc.createElement('div');\n    container.id = CONFIG.ID;\n    container.style.cssText = `\n        position: fixed; top: 0; left: 0;\n        width: 0; height: 0;\n        overflow: visible; pointer-events: none; z-index: ${CONFIG.Z_INDEX};\n        contain: layout style; isolation: isolate;\n    `;\n    targetDoc.body.appendChild(container);\n\n    const shadow = container.attachShadow({ mode: 'open' });\n\n    const faLink = targetDoc.createElement('link');\n    faLink.rel = 'stylesheet';\n    faLink.href = 'https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css';\n    shadow.appendChild(faLink);\n\n    const style = targetDoc.createElement('style');\n    style.textContent = `\n        :host {\n            all: initial;\n            --fm-radius-ball: 50%;\n            --fm-radius-panel: 24px;\n            --fm-radius-btn: 50%;\n            --fm-radius-input: 8px;\n            --fm-radius-thumb: 50%;\n            --fm-transition: all 0.4s cubic-bezier(0.25, 0.8, 0.25, 1);\n            --fm-font: 'Segoe UI', -apple-system, BlinkMacSystemFont, Roboto, sans-serif;\n        }\n\n        .theme-adaptive { --fm-bg: var(--SmartThemeBlurTintColor, rgba(30, 30, 30, 0.85)); --fm-text-main: var(--SmartThemeBodyColor, #ffffff); --fm-text-sub: var(--SmartThemeEmColor, #aaaaaa); --fm-accent: var(--SmartThemeQuoteColor, #4a90e2); --fm-border: var(--SmartThemeBorderColor, rgba(255, 255, 255, 0.1)); --fm-shadow: var(--SmartThemeShadowColor, rgba(0, 0, 0, 0.3)); }\n        .theme-light { --fm-bg: rgba(255, 255, 255, 0.9); --fm-text-main: #1a1a1a; --fm-text-sub: #7a7a7a; --fm-accent: #000000; --fm-border: rgba(0, 0, 0, 0.08); --fm-shadow: rgba(0, 0, 0, 0.1); }\n        .theme-dark { --fm-bg: rgba(20, 20, 20, 0.9); --fm-text-main: #f0f0f0; --fm-text-sub: #888888; --fm-accent: #ffffff; --fm-border: rgba(255, 255, 255, 0.08); --fm-shadow: rgba(0, 0, 0, 0.4); }\n        .theme-glass { --fm-bg: rgba(255, 255, 255, 0.1); --fm-text-main: #ffffff; --fm-text-sub: rgba(255,255,255,0.7); --fm-accent: var(--fm-custom-color, #ffffff); --fm-border: rgba(255, 255, 255, 0.2); --fm-shadow: rgba(0, 0, 0, 0.2); }\n\n        * { box-sizing: border-box; font-family: var(--fm-font); margin: 0; padding: 0; }\n\n        .fm-ball {\n            position: absolute; width: var(--fm-ball-size, 50px); height: var(--fm-ball-size, 50px); \n            border-radius: var(--fm-radius-ball);\n            background: var(--fm-bg); backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px);\n            border: 1px solid var(--fm-border); box-shadow: 0 4px 12px var(--fm-shadow);\n            display: flex; justify-content: center; align-items: center;\n            color: var(--fm-text-main); font-size: 20px; cursor: grab; pointer-events: auto;\n            transition: var(--fm-transition); touch-action: none; user-select: none; z-index: 10;\n        }\n        .fm-ball:active { cursor: grabbing; transform: scale(0.95); }\n        .fm-ball.playing { animation: breathe 3s ease-in-out infinite; }\n        @keyframes breathe {\n            0%, 100% { box-shadow: 0 0 8px var(--fm-shadow), 0 0 0 0 rgba(255,255,255,0); transform: scale(1); }\n            50% { box-shadow: 0 0 16px var(--fm-shadow), 0 0 0 6px var(--fm-border); transform: scale(1.02); }\n        }\n\n        .fm-panel {\n            position: absolute; \n            width: clamp(300px, 90vw, 400px);\n            max-width: calc(100vw - 40px);\n            height: var(--fm-panel-height, 540px);\n            max-height: calc(100dvh - 40px);\n            background: var(--fm-bg); backdrop-filter: blur(20px); -webkit-backdrop-filter: blur(20px);\n            border: 1px solid var(--fm-border); \n            border-radius: var(--fm-radius-panel);\n            box-shadow: 0 10px 30px var(--fm-shadow); display: flex; flex-direction: column;\n            opacity: 0; transform: scale(0.8) translateY(20px); pointer-events: none;\n            transition: var(--fm-transition); z-index: 5; overflow: hidden;\n        }\n        .fm-panel.open { opacity: 1; transform: scale(1) translateY(0); pointer-events: auto; }\n\n        .fm-header { display: flex; align-items: center; padding: 16px 20px; border-bottom: 1px solid var(--fm-border); cursor: move; }\n        .fm-cover-mock { width: 44px; height: 44px; border-radius: var(--fm-radius-btn); background: var(--fm-border); display: flex; justify-content: center; align-items: center; color: var(--fm-text-sub); font-size: 18px; margin-right: 12px; flex-shrink: 0; transition: var(--fm-transition); }\n        .fm-info { flex: 1; overflow: hidden; }\n        .fm-title { color: var(--fm-text-main); font-size: 15px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-bottom: 4px; }\n        .fm-artist { color: var(--fm-text-sub); font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }\n        .fm-close-btn { background: none; border: none; color: var(--fm-text-sub); font-size: 18px; cursor: pointer; padding: 4px; transition: color 0.2s; }\n        .fm-close-btn:hover { color: var(--fm-text-main); }\n\n        .fm-progress-wrap { padding: 14px 20px 0; }\n        .fm-progress-track { position: relative; height: 4px; border-radius: 2px; background: var(--fm-border); cursor: pointer; touch-action: none; padding: 8px 0; background-clip: content-box; box-sizing: content-box; }\n        .fm-progress-fill { position: absolute; left: 0; top: 8px; height: 4px; border-radius: 2px; background: var(--fm-accent); width: 0%; pointer-events: none; }\n        .fm-progress-thumb { position: absolute; top: 50%; left: 0%; width: 12px; height: 12px; border-radius: var(--fm-radius-thumb); background: var(--fm-text-main); box-shadow: 0 1px 4px rgba(0,0,0,0.3); transform: translate(-50%, -50%); pointer-events: none; transition: transform 0.15s, border-radius 0.4s; }\n        .fm-progress-track:active .fm-progress-thumb, .fm-progress-track.dragging .fm-progress-thumb { transform: translate(-50%, -50%) scale(1.25); }\n        .fm-time-row { display: flex; justify-content: space-between; font-size: 10px; color: var(--fm-text-sub); margin-top: 2px; }\n\n        .fm-controls { display: flex; justify-content: space-between; align-items: center; padding: 12px 24px; }\n        .fm-btn { background: none; border: none; color: var(--fm-text-main); font-size: 16px; cursor: pointer; transition: transform 0.2s, color 0.2s, border-radius 0.4s, background 0.2s; display: flex; justify-content: center; align-items: center; width: 32px; height: 32px; border-radius: var(--fm-radius-btn); }\n        .fm-btn:hover { background: var(--fm-border); transform: scale(1.1); }\n        .fm-btn:active { transform: scale(0.9); }\n        .fm-btn.play-pause { font-size: 20px; width: 40px; height: 40px; background: var(--fm-text-main); color: var(--fm-bg); }\n        .fm-btn.play-pause:hover { background: var(--fm-accent); color: #fff; }\n        .fm-btn.active-state { color: var(--fm-accent); }\n\n        .fm-list-section { display: flex; flex-direction: column; flex: 0 0 auto; min-height: 150px; border-top: 0; background: transparent; overflow: visible; }\n        \n        .fm-input-wrap { display: flex; padding: 4px 0; border-bottom: 0; gap: 6px; align-items: center; }\n        .fm-select { background: rgba(0,0,0,0.1); border: 1px solid var(--fm-border); border-radius: var(--fm-radius-input); color: var(--fm-text-main); font-size: 12px; padding: 6px 4px; outline: none; cursor: pointer; transition: var(--fm-transition); }\n        .fm-select option { background: #333; color: #fff; }\n        .fm-input { flex: 1; background: transparent; border: 1px solid var(--fm-border); border-radius: var(--fm-radius-input); padding: 6px 10px; color: var(--fm-text-main); font-size: 12px; outline: none; transition: border-color 0.2s, border-radius 0.4s; }\n        .fm-input:focus { border-color: var(--fm-accent); }\n        .fm-input::placeholder { color: var(--fm-text-sub); opacity: 0.6; }\n        .fm-add-btn { background: var(--fm-text-main); color: var(--fm-bg); border: none; border-radius: var(--fm-radius-input); padding: 6px 12px; cursor: pointer; font-weight: bold; font-size: 12px; transition: opacity 0.2s, border-radius 0.4s; }\n        .fm-add-btn:hover { opacity: 0.8; }\n        .fm-add-btn:disabled { opacity: 0.5; cursor: not-allowed; }\n\n        .fm-playlist-tabs { display: flex; flex-direction: column; gap: 7px; padding: 4px 0; background: transparent; overflow-y: auto; overflow-x: hidden; scrollbar-width: none; }\n        .fm-playlist-tabs::-webkit-scrollbar { width: 0; height: 0; display: none; }\n        .fm-playlist-row { --playlist-color: var(--fm-accent); display: flex; align-items: center; gap: 10px; min-height: 58px; padding: 7px 8px; border: 1px solid transparent; border-left: 3px solid transparent; border-radius: var(--fm-radius-input); background: rgba(255,255,255,0.025); color: var(--fm-text-main); cursor: pointer; transition: var(--fm-transition); user-select: none; box-sizing: border-box; }\n        .fm-playlist-row:hover { background: rgba(255,255,255,0.07); border-color: var(--fm-border); border-left-color: var(--playlist-color); }\n        .fm-playlist-row-cover { width: 44px; height: 44px; flex: 0 0 44px; display: flex; align-items: center; justify-content: center; border-radius: 10px; background: color-mix(in srgb, var(--playlist-color) 18%, transparent); color: var(--playlist-color); overflow: hidden; font-size: 16px; }\n        .fm-playlist-row-cover img, .fm-playlist-hero-cover img { width: 100%; height: 100%; display: block; object-fit: cover; }\n        .fm-playlist-row-info { min-width: 0; flex: 1 1 auto; display: flex; flex-direction: column; gap: 3px; }\n        .fm-playlist-row-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; font-weight: 600; color: var(--fm-text-main); }\n        .fm-playlist-row-count { font-size: 9px; color: var(--fm-text-sub); }\n        .fm-playlist-row-manage, .fm-playlist-manage-btn { flex: 0 0 28px; width: 28px; height: 28px; display: flex; align-items: center; justify-content: center; border: 0; background: transparent; color: var(--fm-text-sub); border-radius: 8px; cursor: pointer; }\n        .fm-playlist-row-manage:hover, .fm-playlist-manage-btn:hover { color: var(--fm-text-main); background: rgba(255,255,255,0.08); }\n        .fm-playlist-add-row { display: flex; align-items: center; justify-content: center; gap: 7px; min-height: 40px; padding: 7px 10px; margin-top: 2px; border: 1px dashed var(--fm-border); border-radius: var(--fm-radius-input); background: transparent; color: var(--fm-text-sub); cursor: pointer; font-size: 11px; transition: var(--fm-transition); box-sizing: border-box; }\n        .fm-playlist-add-row:hover { color: var(--fm-accent); border-color: var(--fm-accent); background: rgba(0,210,255,0.05); }\n        .fm-playlist-detail-head { display: flex; align-items: center; gap: 8px; padding: 3px 0 5px; }\n        .fm-playlist-back { display: inline-flex; align-items: center; gap: 6px; padding: 5px 8px; border: 0; border-radius: 8px; background: transparent; color: var(--fm-text-sub); cursor: pointer; font-size: 11px; }\n        .fm-playlist-back:hover { color: var(--fm-text-main); background: rgba(255,255,255,0.06); }\n        .fm-playlist-detail-title { min-width: 0; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; font-weight: 700; color: var(--fm-text-main); }\n        .fm-playlist-hero { --playlist-color: var(--fm-accent); display: grid; grid-template-columns: 72px minmax(0,1fr) auto; align-items: center; gap: 12px; padding: 10px; margin: 0 0 7px; border-radius: 14px; border: 1px solid var(--fm-border); background: linear-gradient(135deg, color-mix(in srgb, var(--playlist-color) 16%, transparent), rgba(255,255,255,0.025)); overflow: hidden; }\n        .fm-playlist-hero-cover { width: 72px; height: 72px; border-radius: 12px; display: flex; align-items: center; justify-content: center; overflow: hidden; background: color-mix(in srgb, var(--playlist-color) 20%, transparent); color: var(--playlist-color); font-size: 25px; }\n        .fm-playlist-hero-info { min-width: 0; display: flex; flex-direction: column; gap: 3px; }\n        .fm-playlist-hero-name { color: var(--fm-text-main); font-size: 15px; font-weight: 750; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }\n        .fm-playlist-hero-count { color: var(--playlist-color); font-size: 9px; font-weight: 700; }\n        .fm-playlist-hero-desc { color: var(--fm-text-sub); font-size: 10px; line-height: 1.45; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }\n        .fm-playlist-playall { display: inline-flex; align-items: center; gap: 6px; padding: 8px 10px; border: 0; border-radius: 10px; background: var(--playlist-color); color: #fff; cursor: pointer; font-size: 10px; font-weight: 700; white-space: nowrap; }\n        .fm-playlist-playall:hover { filter: brightness(1.08); transform: translateY(-1px); }\n        .fm-playlist-menu-item { display: flex; align-items: center; gap: 9px; }\n        .fm-playlist-menu-item i { width: 14px; text-align: center; opacity: .75; }\n\n        /* 修复下拉菜单越界问题：移至顶层并使用 fixed 绝对定位 */\n        .fm-pop-menu {\n            position: fixed; background: var(--fm-bg); border: 1px solid var(--fm-border);\n            border-radius: var(--fm-radius-input); box-shadow: 0 4px 15px var(--fm-shadow); padding: 4px 0;\n            z-index: 2147483647; min-width: 120px; max-height: 200px; overflow-y: auto; backdrop-filter: blur(10px);\n            opacity: 0; transform: translateY(10px); pointer-events: none; transition: opacity 0.2s, transform 0.2s, border-radius 0.4s;\n        }\n        .fm-pop-menu::-webkit-scrollbar { width: 4px; }\n        .fm-pop-menu::-webkit-scrollbar-thumb { background: var(--fm-border); border-radius: 2px; }\n        .fm-pop-menu.show { opacity: 1; transform: translateY(0); pointer-events: auto; }\n        .fm-pop-item { padding: 8px 16px; font-size: 12px; color: var(--fm-text-main); cursor: pointer; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; transition: background 0.2s; }\n        .fm-pop-item:hover { background: var(--fm-accent); color: #fff; }\n\n        .fm-playlist { flex: 0 0 auto; overflow: visible; padding: 4px 0; position: relative; scrollbar-width:none; -ms-overflow-style:none; }\n        .fm-playlist::-webkit-scrollbar { width:0; height:0; display:none; }\n        \n        .fm-item { display: flex; justify-content: space-between; align-items: center; padding: 8px 16px; cursor: pointer; transition: background 0.2s; }\n        .fm-item:hover { background: var(--fm-border); }\n        .fm-item.active { background: var(--fm-border); border-left: 3px solid var(--fm-accent); }\n        .fm-item-info { flex: 1; overflow: hidden; display: flex; flex-direction: column; gap: 2px; }\n        .fm-item-title { color: var(--fm-text-main); font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }\n        .fm-item-artist { color: var(--fm-text-sub); font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }\n        \n        .fm-item-actions { display: flex; align-items: center; gap: 4px; flex-shrink: 0; }\n        .fm-icon-btn { color: var(--fm-text-sub); background: none; border: none; cursor: pointer; padding: 4px; opacity: 0; transition: all 0.2s; font-size: 14px; }\n        .fm-item:hover .fm-icon-btn { opacity: 1; }\n        .fm-icon-btn:hover { color: var(--fm-accent); transform: scale(1.1); }\n        .fm-icon-btn.del:hover { color: #ff4d4f; }\n        .fm-icon-btn.pinned { color: var(--fm-accent); opacity: 1; }\n\n        .fm-search-header { padding: 4px 16px; font-size: 11px; color: var(--fm-accent); background: rgba(0,0,0,0.2); display: flex; justify-content: space-between; align-items: center; }\n        .fm-back-list, .fm-clear-list { cursor: pointer; text-decoration: underline; transition: opacity 0.2s; }\n        .fm-clear-list:hover { opacity: 0.7; color: #ff4d4f; }\n\n        .fm-theme-bar { display: flex; justify-content: space-around; padding: 10px; border-top: 1px solid var(--fm-border); }\n        .fm-theme-dot { width: 16px; height: 16px; border-radius: 50%; cursor: pointer; border: 2px solid transparent; transition: transform 0.2s; }\n        .fm-theme-dot:hover { transform: scale(1.2); }\n        .fm-theme-dot.active { border-color: var(--fm-text-main); transform: scale(1.1); }\n        .dot-adaptive { background: linear-gradient(45deg, #4a90e2, #50e3c2); }\n        .dot-light { background: #f0f0f0; border-color: #ccc; }\n        .dot-dark { background: #222; }\n        .dot-glass { background: rgba(255,255,255,0.3); border-color: rgba(255,255,255,0.8); backdrop-filter: blur(4px); }\n\n        /* 优化歌词动画：延长持续时间，调整缓动函数，使其更柔和 */\n        \n        .fm-panel-bg {\n            position: absolute; top: -10%; left: -10%; width: 120%; height: 120%; z-index: -1;\n            background-size: cover; background-position: center; background-repeat: no-repeat;\n            pointer-events: none; transition: filter 0.3s;\n            background-image: var(--fm-bg-image, none);\n            filter: blur(var(--fm-bg-blur, 0px)) brightness(var(--fm-bg-brightness, 100%));\n        }\n\n        .fm-bg-btn { background: var(--fm-border); color: var(--fm-text-main); border: none; border-radius: var(--fm-radius-input); padding: 4px 8px; font-size: 11px; cursor: pointer; transition: var(--fm-transition); display: flex; align-items: center; gap: 4px; white-space: nowrap; }\n        .fm-bg-btn:hover { background: var(--fm-accent); color: #fff; }\n        .fm-bg-sliders { display: flex; flex: 1; align-items: center; gap: 10px; min-width: 120px; }\n        .fm-bg-slider-wrap { display: flex; align-items: center; gap: 4px; flex: 1; font-size: 10px; color: var(--fm-text-sub); }\n        .fm-bg-slider { flex: 1; height: 4px; -webkit-appearance: none; background: var(--fm-border); border-radius: 2px; outline: none; }\n        .fm-bg-slider::-webkit-slider-thumb { -webkit-appearance: none; width: 10px; height: 10px; border-radius: var(--fm-radius-thumb); background: var(--fm-text-main); cursor: pointer; transition: var(--fm-transition); }\n        \n        .fm-panel-bg {\n            position: absolute; top: -10%; left: -10%; width: 120%; height: 120%; z-index: -1;\n            background-size: cover; background-position: center; background-repeat: no-repeat;\n            pointer-events: none; transition: filter 0.3s;\n            background-image: var(--fm-bg-image, none);\n            filter: blur(var(--fm-bg-blur, 0px)) brightness(var(--fm-bg-brightness, 100%));\n        }\n\n        /* 桌面歌词字体下拉选择器：使用原生 select，避免 WebView 弹层透明/遮挡问题 */\n        .fm-lrc-font-row { display:flex; align-items:flex-start; gap:10px; }\n        .fm-lrc-font-picker { flex:1; min-width:0; display:flex; flex-direction:column; gap:7px; }\n        .fm-lrc-font-current { width:100%; min-width:0; height:32px; box-sizing:border-box; border:1px solid var(--fm-border); background:var(--fm-panel); color:var(--fm-text-main); border-radius:var(--fm-radius-input); padding:6px 10px; font-size:12px; outline:none; }\n        .fm-lrc-font-url-row { display:flex; gap:6px; width:100%; }\n        .fm-lrc-font-url { flex:1; min-width:0; height:32px; box-sizing:border-box; border:1px solid var(--fm-border); background:var(--fm-panel); color:var(--fm-text-main); border-radius:var(--fm-radius-input); padding:6px 10px; font-size:11px; outline:none; }\n        .fm-lrc-font-url::placeholder { color:var(--fm-text-sub); opacity:.8; }\n        .fm-lrc-font-url:focus { border-color:var(--fm-accent); }\n        .fm-lrc-font-import { flex:0 0 auto; height:32px; border:0; border-radius:var(--fm-radius-input); padding:0 11px; background:var(--fm-accent); color:#fff; font-size:11px; cursor:pointer; }\n        .fm-lrc-font-import:disabled { opacity:.55; cursor:wait; }\n        .fm-lrc-font-reset { width:100%; height:32px; margin-top:7px; border:0; border-radius:9px; background:rgba(0,0,0,.045); color:var(--fm-text-sub); cursor:pointer; font-size:10px; transition:background .18s ease,color .18s ease; }\n        .fm-lrc-font-reset:hover { background:rgba(0,0,0,.08); color:var(--fm-text-main); }\n        .fm-lrc-font-reset:disabled { opacity:.55; cursor:default; }\n        .fm-lrc-font-hint { font-size:9px; color:var(--fm-text-sub); line-height:1.45; }\n\n        /* 强制把自定义字体应用到桌面歌词本体。播放器其它文字完全不受影响。\n           注意：播放器基础样式对所有元素设置了默认字体，所以这里必须使用 !important。 */\n        .fm-out-lyrics, .fm-out-lyrics *,\n        .fm-out-lyrics-scroll, .fm-out-lyrics-scroll * {\n            font-family: var(--fm-lrc-family, var(--fm-font)) !important;\n        }\n\n        .fm-out-lyrics {\n            position: absolute;\n            bottom: calc(var(--fm-lrc-bottom, 80px) + env(safe-area-inset-bottom, 0px));\n            max-height: 40dvh; overflow: hidden; left: 50%; transform: translateX(-50%);\n            width: max-content; max-width: 80vw; min-width: 60px; min-height: 24px;\n            text-align: center; pointer-events: none; z-index: 2147483647;\n            display: flex; flex-direction: column; align-items: center; gap: 4px;\n            opacity: 0; transition: opacity 0.5s, bottom 0.2s;\n        }\n        .fm-out-lyrics.show { opacity: 1; }\n        .fm-lrc-line { font-size: var(--fm-lrc-font, 16px); font-weight: bold; color: var(--fm-accent); text-shadow: 0 2px 8px var(--fm-shadow), 0 0 2px rgba(0,0,0,0.5); line-height: 1.4; }\n        .fm-lrc-plain-line { font-size: var(--fm-lrc-font, 16px); font-weight: bold; color: var(--fm-accent); line-height: 1.4; text-shadow: 0 2px 8px var(--fm-shadow), 0 0 2px rgba(0,0,0,0.5); }\n        .fm-lrc-plain-trans { margin-top: 4px; }\n        .fm-lrc-trans { font-size: calc(var(--fm-lrc-font, 16px) * 0.75); color: var(--fm-text-sub); text-shadow: 0 1px 4px var(--fm-shadow); }\n        \n        /* 优化动画效果：减小位移，延长持续时间，增强“浮现”感而非“弹跳”感 */\n        .lrc-anim-char { \n            display: inline-block; opacity: 0; transform: translateY(4px); \n            animation: lrc-in 1.0s cubic-bezier(0.22, 1, 0.36, 1) forwards; \n        }\n        @keyframes lrc-in { to { opacity: 1; transform: translateY(0); } }\n\n        /* 新增：随机掉落动画与标红样式 */\n        .lrc-anim-fall {\n            display: inline-block; opacity: 0; transform: translateY(-40px);\n            /* 缩短基础动画时间，使其更干脆，避免拖沓 */\n            animation: lrc-fall-in 0.8s cubic-bezier(0.22, 1, 0.36, 1) forwards;\n        }\n        @keyframes lrc-fall-in { \n            0% { opacity: 0; transform: translateY(-40px); filter: blur(4px); }\n            100% { opacity: 1; transform: translateY(0); filter: blur(0); } \n        }\n        /* 翻译专用渐现动画：无位移，仅透明度和模糊变化 */\n        .lrc-trans-fade {\n            opacity: 0;\n            animation: lrc-trans-fade-in 0.8s cubic-bezier(0.22, 1, 0.36, 1) forwards;\n        }\n        @keyframes lrc-trans-fade-in {\n            0% { opacity: 0; filter: blur(4px); }\n            100% { opacity: 1; filter: blur(0); }\n        }\n        /* 优化退场动画：原地模糊消散，更自然柔和 */\n        @keyframes lrc-fade-out {\n            0% { opacity: 1; transform: scale(1); filter: blur(0); }\n            100% { opacity: 0; transform: scale(0.95); filter: blur(8px); }\n        }\n        .lrc-highlight {\n            color: #ff4d4f !important;\n            text-shadow: 0 0 8px rgba(255, 77, 79, 0.6), 0 2px 4px rgba(0,0,0,0.5) !important;\n        }\n\n        .fm-out-lyrics-scroll {\n            position: absolute;\n            bottom: calc(var(--fm-lrc-bottom, 80px) + env(safe-area-inset-bottom, 0px));\n            max-height: 40dvh; overflow: hidden; left: 50%; transform: translateX(-50%);\n            width: max-content; max-width: 80vw; min-width: 60px;\n            height: calc(var(--fm-lrc-font, 16px) * 5.4);\n            overflow: hidden; pointer-events: none; z-index: 2147483647;\n            opacity: 0; transition: opacity 0.5s, bottom 0.2s;\n            -webkit-mask-image: linear-gradient(to bottom, transparent 0%, black 30%, black 70%, transparent 100%);\n            mask-image: linear-gradient(to bottom, transparent 0%, black 30%, black 70%, transparent 100%);\n        }\n        .fm-out-lyrics-scroll.show { opacity: 1; }\n        .fm-lrc-scroll-list { display: flex; flex-direction: column; align-items: center; transition: transform 0.45s cubic-bezier(0.25,0.8,0.25,1); }\n        .fm-lrc-scroll-line {\n            font-size: var(--fm-lrc-font, 16px); line-height: 1.8; color: var(--fm-text-sub); opacity: 0.35;\n            text-align: center; text-shadow: 0 2px 8px var(--fm-shadow); white-space: nowrap; padding: 2px 10px;\n            transition: opacity 0.4s, color 0.4s, font-size 0.4s;\n        }\n        .fm-lrc-scroll-line.near { opacity: 0.6; }\n        .fm-lrc-scroll-line.current { color: var(--fm-accent); font-weight: bold; opacity: 1; font-size: calc(var(--fm-lrc-font, 16px) * 1.15); }\n\n        .fm-lrc-settings-panel { display: none; flex-direction: column; gap: 10px; padding: 8px 0 4px; border-top: 0; }\n        .fm-lrc-settings-panel.open { display: flex; }\n        .fm-lrc-settings-row { display: flex; align-items: center; gap: 10px; }\n        .fm-lrc-settings-label { font-size: 11px; color: var(--fm-text-sub); width: 56px; flex-shrink: 0; }\n        .fm-lrc-mode-switch { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 6px; flex: 1; }\n        .fm-lrc-mode-btn { padding: 6px 0; font-size: 11px; text-align: center; border-radius: var(--fm-radius-input); border: 1px solid var(--fm-border); background: none; color: var(--fm-text-sub); cursor: pointer; transition: var(--fm-transition); }\n        .fm-lrc-mode-btn.active { color: var(--fm-accent); border-color: var(--fm-accent); }\n        .fm-lrc-settings-row input[type=range] { flex: 1; accent-color: var(--fm-accent); }\n        .force-hide { display: none !important; }\n        .ball-hidden .fm-ball { display: none !important; }\n\n        .fm-page-play .fm-play-lyrics-settings { margin-top:2px; }\n        .fm-page-play .fm-play-lyrics-settings .fm-lrc-settings-panel.open, .fm-page-more .fm-play-lyrics-settings .fm-lrc-settings-panel.open { display:flex; padding:8px 0 4px; border-top:0; }\n        .fm-page-play .fm-quick-card { min-height:52px; box-sizing:border-box; }\n        .fm-bottom-nav { grid-template-columns:repeat(2,1fr); }\n\n        .fm-app-head { display:flex; align-items:center; justify-content:space-between; padding:14px 16px 10px; flex:0 0 auto; }\n        .fm-brand { display:flex; align-items:center; min-width:0; }\n        .fm-app-name { font-size:15px; font-weight:700; color:var(--fm-text-main); }\n        .fm-app-sub { margin-top:2px; font-size:9px; letter-spacing:.16em; color:var(--fm-text-sub); }\n        .fm-pages { flex:1 1 auto; min-height:0; overflow:hidden; position:relative; }\n        .fm-page { display:none; height:100%; min-height:0; overflow-y:auto; overflow-x:hidden; padding:8px 16px 18px; box-sizing:border-box; scrollbar-width:none; -ms-overflow-style:none; }\n        .fm-page::-webkit-scrollbar { width:0; height:0; display:none; }\n        .fm-page.active { display:flex; flex-direction:column; gap:12px; }\n        .fm-page.active > * { flex-shrink: 0; }\n        .fm-section-kicker { font-size:9px; letter-spacing:.18em; color:var(--fm-accent); font-weight:800; margin-bottom:3px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }\n        .fm-page-title { display:flex; align-items:center; justify-content:space-between; padding:4px 2px 2px; }\n        .fm-page-title h2 { margin:0; font-size:24px; line-height:1.1; color:var(--fm-text-main); }\n        .fm-now-playing { display:flex; align-items:center; gap:14px; padding:14px; border:1px solid var(--fm-border); border-radius:18px; background:rgba(255,255,255,.06); }\n        .fm-now-cover { width:82px; height:82px; flex:0 0 82px; border-radius:16px; display:flex; align-items:center; justify-content:center; background:var(--fm-border); color:var(--fm-text-sub); font-size:34px; overflow:hidden; }\n        .fm-now-cover img { width:100%; height:100%; display:block; object-fit:cover; object-position:center; }\n        .fm-decoration-preview { margin:4px 0 8px; display:flex; align-items:center; gap:10px; }\n        .fm-decoration-preview .fm-now-cover { width:54px; height:54px; flex-basis:54px; font-size:23px; }\n        .fm-decoration-preview-text { min-width:0; font-size:10px; line-height:1.45; color:var(--fm-text-sub); }\n        .fm-decoration-preview-text strong { display:block; color:var(--fm-text-main); font-size:11px; margin-bottom:2px; }\n        .fm-decoration-input { flex:1; min-width:0; height:34px; box-sizing:border-box; }\n        .fm-now-meta { min-width:0; }\n        .fm-now-meta .fm-title { font-size:18px; margin-bottom:5px; }\n        .fm-now-meta .fm-artist { font-size:12px; }\n        .fm-quick-card, .fm-status-card, .fm-setting-card, .fm-info-card, .fm-settings-section { border:0; border-radius:0; background:transparent; }\n        .fm-quick-card { display:flex; align-items:center; justify-content:space-between; padding:8px 0; }\n        .fm-quick-title, .fm-card-title, .fm-status-title { font-size:13px; font-weight:700; color:var(--fm-text-main); }\n        .fm-quick-sub, .fm-card-sub, .fm-status-sub { margin-top:3px; font-size:10px; line-height:1.45; color:var(--fm-text-sub); }\n        .fm-card-arrow, .fm-outline-btn { border:0; background:transparent; color:var(--fm-text-main); border-radius:10px; cursor:pointer; }\n        .fm-card-arrow { width:32px; height:32px; }\n        .fm-setting-card { overflow:visible; }\n        .fm-setting-card-head { display:flex; align-items:center; justify-content:space-between; padding:8px 0 4px; }\n        .fm-inline-icon-btn { width:30px; height:30px; }\n        .fm-count-badge { padding:3px 0; font-size:9px; color:var(--fm-text-sub); }\n        .fm-library-input { padding:0; border:0; gap:6px; }\n        .fm-library-input .fm-select { min-width:72px; }\n        .fm-library-input .fm-input { min-width:0; height:38px; box-sizing:border-box; }\n        .fm-library-input .fm-add-btn { height:38px; }\n        .fm-page-playlist { flex:0 0 auto; min-height:0; display:flex; flex-direction:column; gap:10px; }\n        .fm-page-playlist .fm-list-section { min-height:150px; flex:0 0 auto; border:0; border-radius:0; overflow:visible; background:transparent; }\n        .fm-page-playlist .fm-playlist-tabs { flex:0 0 auto; width:100%; min-width:0; box-sizing:border-box; }\n        .fm-page-playlist .fm-playlist { min-height:0; overflow:visible; }\n        .fm-settings-section { padding:8px 0; }\n        .fm-settings-section-title { font-size:12px; font-weight:800; color:var(--fm-text-main); margin-bottom:12px; }\n        .fm-theme-row { display:flex; gap:10px; margin-bottom:14px; }\n        .fm-theme-row .fm-theme-dot { width:28px; height:28px; }\n        .fm-more-row { display:flex; align-items:center; gap:12px; min-height:38px; border-top:0; font-size:11px; color:var(--fm-text-sub); }\n        .fm-more-row + .fm-more-row { margin-top:4px; }\n        .fm-more-row > span { width:72px; flex:0 0 72px; }\n        .fm-more-row input[type=range] { flex:1; min-width:0; accent-color:var(--fm-accent); }\n        .fm-appearance-pair { display:grid; grid-template-columns:1fr 1fr; gap:14px; align-items:center; }\n        .fm-appearance-pair .fm-more-row { min-width:0; }\n        .fm-appearance-pair .fm-more-row > span { width:auto; flex:1; }\n        .fm-color-picker { width:38px; height:26px; padding:0; border:0; background:transparent; }\n        .fm-wide-btn { width:100%; height:36px; margin-top:8px; border:0; border-radius:10px; background:rgba(0,0,0,.05); color:var(--fm-text-main); display:flex; align-items:center; justify-content:center; gap:8px; cursor:pointer; font-size:11px; }\n        .fm-bg-action-row { display:flex; gap:7px; margin-bottom:4px; }\n        .fm-bg-btn { flex:1; height:34px; border:0; border-radius:10px; background:rgba(0,0,0,.05); color:var(--fm-text-main); cursor:pointer; font-size:10px; }\n        .fm-range-with-icon { display:flex; align-items:center; gap:8px; flex:1; }\n        .fm-range-with-icon i { width:12px; color:var(--fm-text-sub); font-size:10px; }\n        .fm-switch { position:relative; width:42px; height:24px; flex:0 0 auto; display:inline-block; }\n        .fm-switch input { opacity:0; width:0; height:0; position:absolute; }\n        .fm-switch-slider { position:absolute; inset:0; cursor:pointer; border-radius:999px; background:rgba(0,0,0,.12); transition:.2s ease; }\n        .fm-switch-slider::before { content:\"\"; position:absolute; width:18px; height:18px; left:3px; top:3px; border-radius:50%; background:#fff; box-shadow:0 1px 4px rgba(0,0,0,.18); transition:.2s ease; }\n        .fm-switch input:checked + .fm-switch-slider { background:var(--fm-accent); }\n        .fm-switch input:checked + .fm-switch-slider::before { transform:translateX(18px); }\n\n        .fm-bottom-nav { display:grid; grid-template-columns:repeat(2,1fr); gap:4px; padding:8px 8px max(8px, env(safe-area-inset-bottom)); border-top:0; background:rgba(0,0,0,.02); flex:0 0 auto; }\n        .fm-nav-btn { min-width:0; height:44px; border:0; border-radius:13px; background:transparent; color:var(--fm-text-sub); display:flex; flex-direction:column; align-items:center; justify-content:center; gap:3px; cursor:pointer; font-size:10px; }\n        .fm-nav-btn i { font-size:15px; }\n        .fm-nav-btn.active { color:var(--fm-accent); background:transparent; }\n\n        @media (min-width: 700px) {\n            .fm-panel { width:400px; }\n            .fm-page { padding-left:18px; padding-right:18px; }\n        }\n    `;\n    shadow.appendChild(style);\n\n    const wrapper = targetDoc.createElement('div');\n    wrapper.className = `theme-${STATE.currentTheme}`;\n    wrapper.style.contain = 'layout style';\n    \n    wrapper.innerHTML = `\n        <div class=\"fm-ball\" id=\"fm-ball\" title=\"拖拽移动，点击展开\"><i class=\"fas fa-music\"></i></div>\n\n        <div class=\"fm-panel\" id=\"fm-panel\">\n            <div class=\"fm-panel-bg\" id=\"fm-panel-bg\"></div>\n\n            <div class=\"fm-app-head\">\n                <div class=\"fm-brand\">\n                    <div class=\"fm-brand-text\">\n                        <div class=\"fm-app-name\">播放器测试</div>\n                        <div class=\"fm-app-sub\">MUSIC PLAYER</div>\n                    </div>\n                </div>\n                <button class=\"fm-close-btn\" id=\"fm-close\"><i class=\"fas fa-times\"></i></button>\n            </div>\n\n            <main class=\"fm-pages\">\n                <!-- 播放与歌单 -->\n                <section class=\"fm-page fm-page-play active\" data-page=\"play\">\n                    <div class=\"fm-now-playing\">\n                        <div class=\"fm-now-cover\" id=\"fm-now-cover\">\n                            <i class=\"fas fa-compact-disc\"></i>\n                        </div>\n                        <div class=\"fm-now-meta\">\n                            <div class=\"fm-section-kicker\" id=\"fm-now-playing-label\">NOW PLAYING</div>\n                            <div class=\"fm-title\" id=\"fm-title\">播放器测试</div>\n                            <div class=\"fm-artist\" id=\"fm-artist\">Awaiting Connection...</div>\n                        </div>\n                    </div>\n\n                    <div class=\"fm-progress-wrap\" id=\"fm-progress-wrap\">\n                        <div class=\"fm-progress-track\" id=\"fm-progress-track\">\n                            <div class=\"fm-progress-fill\" id=\"fm-progress-fill\"></div>\n                            <div class=\"fm-progress-thumb\" id=\"fm-progress-thumb\"></div>\n                        </div>\n                        <div class=\"fm-time-row\">\n                            <span id=\"fm-time-current\">0:00</span>\n                            <span id=\"fm-time-duration\">0:00</span>\n                        </div>\n                    </div>\n\n                    <div class=\"fm-controls\">\n                        <button class=\"fm-btn\" id=\"fm-mode\" title=\"播放模式\"><i class=\"fas fa-retweet\"></i></button>\n                        <button class=\"fm-btn\" id=\"fm-prev\"><i class=\"fas fa-step-backward\"></i></button>\n                        <button class=\"fm-btn play-pause\" id=\"fm-play\"><i class=\"fas fa-play\"></i></button>\n                        <button class=\"fm-btn\" id=\"fm-next\"><i class=\"fas fa-step-forward\"></i></button>\n                        <button class=\"fm-btn active-state\" id=\"fm-lrc-toggle\" title=\"外显歌词\"><i class=\"fas fa-closed-captioning\"></i></button>\n                    </div>\n\n                    <section class=\"fm-page-playlist\" id=\"fm-playlist-section\">\n                        <div class=\"fm-input-wrap fm-library-input\">\n                            <select class=\"fm-select\" id=\"fm-source-select\">\n                                <option value=\"netease\">网易云</option>\n                                <option value=\"tencent\">QQ音乐</option>\n                                <option value=\"search\">搜单曲</option>\n                                <option value=\"search_local\">搜列表</option>\n                            </select>\n                            <input type=\"text\" class=\"fm-input\" id=\"fm-input\" placeholder=\"输入歌单ID或链接\" autocomplete=\"off\">\n                            <button class=\"fm-add-btn\" id=\"fm-add\">导入</button>\n                        </div>\n\n                        <div class=\"fm-list-section\">\n                            <div class=\"fm-playlist-tabs\" id=\"fm-playlist-tabs\"></div>\n                            <div class=\"fm-playlist\" id=\"fm-playlist\"></div>\n                        </div>\n                    </section>\n                </section>\n\n                <!-- 外观设置 -->\n                <section class=\"fm-page fm-page-more\" data-page=\"more\">\n                    <div class=\"fm-page-title\">\n                        <div>\n                            <div class=\"fm-section-kicker\">CUSTOMIZE</div>\n                            <h2>外观设置</h2>\n                        </div>\n                    </div>\n\n                    <div class=\"fm-settings-section\">\n                        <div class=\"fm-settings-section-title\">外观</div>\n                        <div class=\"fm-theme-row\">\n                            <div class=\"fm-theme-dot dot-adaptive active\" data-theme=\"adaptive\" title=\"自适应\"></div>\n                            <div class=\"fm-theme-dot dot-light\" data-theme=\"light\" title=\"极简白\"></div>\n                            <div class=\"fm-theme-dot dot-dark\" data-theme=\"dark\" title=\"深邃黑\"></div>\n                            <div class=\"fm-theme-dot dot-glass\" data-theme=\"glass\" title=\"毛玻璃\"></div>\n                        </div>\n                        <div class=\"fm-more-row\">\n                            <span>悬浮球大小</span>\n                            <input type=\"range\" class=\"fm-size-slider\" id=\"fm-size-slider\" min=\"30\" max=\"80\" value=\"50\">\n                        </div>\n                        <div class=\"fm-appearance-pair\">\n                            <div class=\"fm-more-row\">\n                                <span>强调色</span>\n                                <input type=\"color\" class=\"fm-color-picker\" id=\"fm-color-picker\" value=\"#4a90e2\">\n                            </div>\n                            <div class=\"fm-more-row\">\n                                <span>形状</span>\n                                <button class=\"fm-wide-btn\" id=\"fm-shape-btn\"><i class=\"fas fa-square\"></i><span>切换</span></button>\n                            </div>\n                        </div>\n                        <div class=\"fm-more-row\">\n                            <span>悬浮球</span>\n                            <label class=\"fm-switch\" title=\"显示或隐藏悬浮球\">\n                                <input type=\"checkbox\" id=\"fm-ball-visible-toggle\">\n                                <span class=\"fm-switch-slider\"></span>\n                            </label>\n                        </div>\n                    </div>\n\n                    <div class=\"fm-settings-section fm-lyrics-settings-section\">\n                        <div class=\"fm-settings-section-title\">歌词</div>\n                        <div class=\"fm-setting-card fm-play-lyrics-settings\">\n                            <div class=\"fm-setting-card-head\">\n                                <div>\n                                    <div class=\"fm-card-title\">歌词显示</div>\n                                    <div class=\"fm-card-sub\">选择外显歌词样式、字号与位置</div>\n                                </div>\n                                <button class=\"fm-btn fm-inline-icon-btn\" id=\"fm-lrc-settings\" title=\"歌词设置\"><i class=\"fas fa-sliders-h\"></i></button>\n                            </div>\n                            <div class=\"fm-lrc-settings-panel open\" id=\"fm-lrc-settings-panel\">\n                                <div class=\"fm-lrc-settings-row\">\n                                    <span class=\"fm-lrc-settings-label\">样式</span>\n                                    <div class=\"fm-lrc-mode-switch\">\n                                        <button class=\"fm-lrc-mode-btn\" id=\"fm-lrc-mode-plain\" data-mode=\"plain\">普通歌词</button>\n                                        <button class=\"fm-lrc-mode-btn\" id=\"fm-lrc-mode-popup\" data-mode=\"popup\">逐句显现</button>\n                                        <button class=\"fm-lrc-mode-btn\" id=\"fm-lrc-mode-scroll\" data-mode=\"scroll\">三行滚动</button>\n                                        <button class=\"fm-lrc-mode-btn\" id=\"fm-lrc-mode-fall\" data-mode=\"fall\">随机掉落</button>\n                                    </div>\n                                </div>\n                                <div class=\"fm-lrc-settings-row\">\n                                    <span class=\"fm-lrc-settings-label\">字号</span>\n                                    <input type=\"range\" id=\"fm-lrc-font-slider\" min=\"12\" max=\"32\" step=\"1\">\n                                </div>\n                                <div class=\"fm-lrc-settings-row\">\n                                    <span class=\"fm-lrc-settings-label\">位置</span>\n                                    <input type=\"range\" id=\"fm-lrc-bottom-slider\" min=\"40\" max=\"400\" step=\"5\">\n                                </div>\n                                <div class=\"fm-lrc-settings-row fm-lrc-font-row\">\n                                    <span class=\"fm-lrc-settings-label\">字体</span>\n                                    <div class=\"fm-lrc-font-picker\">\n                                        <input class=\"fm-lrc-font-current\" id=\"fm-lrc-font-current\" type=\"text\" value=\"默认字体\" readonly aria-label=\"当前桌面歌词字体\">\n                                        <div class=\"fm-lrc-font-url-row\">\n                                            <input class=\"fm-lrc-font-url\" id=\"fm-lrc-font-url\" type=\"url\" placeholder=\"粘贴 ZeoSeven 字体详情页 URL\" autocomplete=\"off\" aria-label=\"ZeoSeven 字体网址\">\n                                            <button class=\"fm-lrc-font-import\" id=\"fm-lrc-font-import\" type=\"button\">导入</button>\n                                        </div>\n                                        <button class=\"fm-lrc-font-reset\" id=\"fm-lrc-font-reset\" type=\"button\">恢复默认字体</button>\n                                        <div class=\"fm-lrc-font-hint\">例如：https://fonts.zeoseven.com/items/217/　只会应用到桌面歌词</div>\n                                    </div>\n                                </div>\n                            </div>\n                        </div>\n                    </div>\n\n                    <div class=\"fm-settings-section\">\n                        <div class=\"fm-settings-section-title\">播放器小图装修</div>\n                        <input type=\"file\" id=\"fm-decoration-upload\" accept=\"image/*\" style=\"display:none;\">\n                        <div class=\"fm-decoration-preview\">\n                            <div class=\"fm-now-cover\" id=\"fm-decoration-preview-cover\"><i class=\"fas fa-compact-disc\"></i></div>\n                            <div class=\"fm-decoration-preview-text\">\n                                <strong>小图装饰</strong>\n                                <span>上传一张小图片，替换播放卡片左侧的唱片图标。</span>\n                            </div>\n                        </div>\n                        <div class=\"fm-bg-action-row\">\n                            <button class=\"fm-bg-btn\" id=\"fm-decoration-btn-upload\"><i class=\"fas fa-image\"></i> 上传小图</button>\n                            <button class=\"fm-bg-btn\" id=\"fm-decoration-btn-clear\"><i class=\"fas fa-trash\"></i> 清除</button>\n                        </div>\n                        <div class=\"fm-more-row\">\n                            <span>播放标签</span>\n                            <input type=\"text\" class=\"fm-input fm-decoration-input\" id=\"fm-decoration-label\" maxlength=\"24\" placeholder=\"NOW PLAYING\" autocomplete=\"off\">\n                        </div>\n                    </div>\n\n                    <div class=\"fm-settings-section\">\n                        <div class=\"fm-settings-section-title\">壁纸</div>\n                        <input type=\"file\" id=\"fm-bg-upload\" accept=\"image/*\" style=\"display:none;\">\n                        <div class=\"fm-bg-action-row\">\n                            <button class=\"fm-bg-btn\" id=\"fm-bg-btn-upload\"><i class=\"fas fa-image\"></i> 上传壁纸</button>\n                            <button class=\"fm-bg-btn\" id=\"fm-bg-btn-clear\"><i class=\"fas fa-trash\"></i> 清除</button>\n                            <button class=\"fm-bg-btn\" id=\"fm-bg-btn-ratio\"><i class=\"fas fa-crop-alt\"></i> 比例</button>\n                        </div>\n                        <div class=\"fm-more-row\">\n                            <span>模糊</span>\n                            <div class=\"fm-range-with-icon\"><i class=\"fas fa-tint\"></i><input type=\"range\" class=\"fm-bg-slider\" id=\"fm-bg-blur\" min=\"0\" max=\"30\" value=\"10\"></div>\n                        </div>\n                        <div class=\"fm-more-row\">\n                            <span>亮度</span>\n                            <div class=\"fm-range-with-icon\"><i class=\"fas fa-sun\"></i><input type=\"range\" class=\"fm-bg-slider\" id=\"fm-bg-brightness\" min=\"10\" max=\"150\" value=\"70\"></div>\n                        </div>\n                    </div>\n                </section>\n            </main>\n\n            <nav class=\"fm-bottom-nav\" id=\"fm-bottom-nav\">\n                <button class=\"fm-nav-btn active\" data-page-target=\"play\">\n                    <i class=\"fas fa-music\"></i><span>播放与歌单</span>\n                </button>\n                <button class=\"fm-nav-btn\" data-page-target=\"more\">\n                    <i class=\"fas fa-sliders-h\"></i><span>外观设置</span>\n                </button>\n            </nav>\n        </div>\n\n\n        <div class=\"fm-pop-menu\" id=\"fm-pop-menu\"></div>\n        <div class=\"fm-out-lyrics show\" id=\"fm-out-lyrics\"></div>\n        <div class=\"fm-out-lyrics-scroll show\" id=\"fm-out-lyrics-scroll\"><div class=\"fm-lrc-scroll-list\" id=\"fm-lrc-scroll-list\"></div></div>\n    `;\n    shadow.appendChild(wrapper);\n\n    const UI = {\n        wrapper: wrapper,\n        ball: wrapper.querySelector('#fm-ball'),\n        panel: wrapper.querySelector('#fm-panel'),\n        closeBtn: wrapper.querySelector('#fm-close'),\n        title: wrapper.querySelector('#fm-title'),\n        artist: wrapper.querySelector('#fm-artist'),\n        nowCover: wrapper.querySelector('#fm-now-cover'),\n        nowPlayingLabel: wrapper.querySelector('#fm-now-playing-label'),\n        decorationPreviewCover: wrapper.querySelector('#fm-decoration-preview-cover'),\n        decorationUploadInput: wrapper.querySelector('#fm-decoration-upload'),\n        decorationUploadBtn: wrapper.querySelector('#fm-decoration-btn-upload'),\n        decorationClearBtn: wrapper.querySelector('#fm-decoration-btn-clear'),\n        decorationLabelInput: wrapper.querySelector('#fm-decoration-label'),\n        playBtn: wrapper.querySelector('#fm-play'),\n        prevBtn: wrapper.querySelector('#fm-prev'),\n        nextBtn: wrapper.querySelector('#fm-next'),\n        modeBtn: wrapper.querySelector('#fm-mode'),\n        lrcToggleBtn: wrapper.querySelector('#fm-lrc-toggle'),\n        lrcSettingsBtn: wrapper.querySelector('#fm-lrc-settings'),\n        lrcSettingsPanel: wrapper.querySelector('#fm-lrc-settings-panel'),\n        lrcModePlainBtn: wrapper.querySelector('#fm-lrc-mode-plain'),\n        lrcModePopupBtn: wrapper.querySelector('#fm-lrc-mode-popup'),\n        lrcModeScrollBtn: wrapper.querySelector('#fm-lrc-mode-scroll'),\n        lrcModeFallBtn: wrapper.querySelector('#fm-lrc-mode-fall'),\n        lrcFontSlider: wrapper.querySelector('#fm-lrc-font-slider'),\n        lrcBottomSlider: wrapper.querySelector('#fm-lrc-bottom-slider'),\n        lrcFontCurrent: wrapper.querySelector('#fm-lrc-font-current'),\n        lrcFontUrl: wrapper.querySelector('#fm-lrc-font-url'),\n        lrcFontImport: wrapper.querySelector('#fm-lrc-font-import'),\n        lrcFontReset: wrapper.querySelector('#fm-lrc-font-reset'),\n        outLyricsScroll: wrapper.querySelector('#fm-out-lyrics-scroll'),\n        outLyricsScrollList: wrapper.querySelector('#fm-lrc-scroll-list'),\n        sourceSelect: wrapper.querySelector('#fm-source-select'),\n        input: wrapper.querySelector('#fm-input'),\n        addBtn: wrapper.querySelector('#fm-add'),\n        playlistTabs: wrapper.querySelector('#fm-playlist-tabs'),\n        popMenu: wrapper.querySelector('#fm-pop-menu'),\n        playlistEl: wrapper.querySelector('#fm-playlist'),\n        themeDots: wrapper.querySelectorAll('.fm-theme-dot'),\n        sizeSlider: wrapper.querySelector('#fm-size-slider'),\n        colorPicker: wrapper.querySelector('#fm-color-picker'),\n        shapeBtn: wrapper.querySelector('#fm-shape-btn'),\n        ballVisibleToggle: wrapper.querySelector('#fm-ball-visible-toggle'),\n        bgUploadInput: wrapper.querySelector('#fm-bg-upload'),\n        bgUploadBtn: wrapper.querySelector('#fm-bg-btn-upload'),\n        bgClearBtn: wrapper.querySelector('#fm-bg-btn-clear'),\n        ratioBtn: wrapper.querySelector('#fm-bg-btn-ratio'),\n        bgBlurSlider: wrapper.querySelector('#fm-bg-blur'),\n        bgBrightnessSlider: wrapper.querySelector('#fm-bg-brightness'),\n        outLyrics: wrapper.querySelector('#fm-out-lyrics'),\n        progressTrack: wrapper.querySelector('#fm-progress-track'),\n        progressFill: wrapper.querySelector('#fm-progress-fill'),\n        progressThumb: wrapper.querySelector('#fm-progress-thumb'),\n        timeCurrent: wrapper.querySelector('#fm-time-current'),\n        timeDuration: wrapper.querySelector('#fm-time-duration')\n    };\n\n    // ================= 桌面歌词字体 =================\n    // 只接受用户主动提供的 ZeoSeven 字体详情页 / FontsAPI URL。\n    // 不抓取整个字体网站，也不维护庞大的在线字体目录，避免 WebView 卡顿。\n    const loadedFontCss = new Set();\n    const loadingFontCss = new Map();\n\n    // 只在用户点击“导入”后加载字体 CSS。不要 fetch ZeoSeven 页面：\n    // Tauri/WebView 对跨域 fetch 的限制可能导致明明字体 CSS 能加载，却拿不到文本。\n    const extractFontFamilyFromRules = (rules) => {\n        try {\n            for (const rule of Array.from(rules || [])) {\n                if (rule.type === targetWin.CSSRule.FONT_FACE_RULE || rule.cssText?.startsWith('@font-face')) {\n                    const family = rule.style?.getPropertyValue('font-family') || '';\n                    if (family.trim()) return family.trim().replace(/^['\"]|['\"]$/g, '');\n                }\n                if (rule.cssRules) {\n                    const nested = extractFontFamilyFromRules(rule.cssRules);\n                    if (nested) return nested;\n                }\n            }\n        } catch (_) {}\n        return '';\n    };\n\n    const loadZeoCssAndReadFamily = (cssUrl, timeout = 7000) => new Promise((resolve) => {\n        let settled = false;\n        const finish = (family) => {\n            if (settled) return;\n            settled = true;\n            if (timer) clearTimeout(timer);\n            resolve(family || '');\n        };\n        const id = 'fm-zeofont-inspect-' + btoa(unescape(encodeURIComponent(cssUrl))).replace(/[^a-zA-Z0-9]/g,'').slice(-28);\n        const old = targetDoc.getElementById(id);\n        // 每次导入都重新挂载 CSS link，避免旧 stylesheet 在 WebView 中处于\n        // 半加载/不可读状态时，把后续导入卡在“加载中”。\n        if (old) {\n            try { old.remove(); } catch (_) {}\n        }\n        const link = targetDoc.createElement('link');\n        link.id = id;\n        link.rel = 'stylesheet';\n        link.href = cssUrl;\n        link.crossOrigin = 'anonymous';\n        const timer = setTimeout(() => finish(''), timeout);\n        link.onload = () => {\n            let family = '';\n            try { family = extractFontFamilyFromRules(link.sheet?.cssRules); } catch (_) {}\n            finish(family);\n        };\n        link.onerror = () => finish('');\n        (targetDoc.head || targetDoc.documentElement).appendChild(link);\n    });\n\n    const parseZeoSevenUrl = (rawUrl) => {\n        let url;\n        try { url = new URL(String(rawUrl || '').trim()); } catch (_) { return null; }\n        const host = url.hostname.toLowerCase();\n        if (host !== 'fonts.zeoseven.com' && host !== 'www.fonts.zeoseven.com' && host !== 'fontsapi.zeoseven.com') return null;\n        if (host === 'fonts.zeoseven.com' || host === 'www.fonts.zeoseven.com') {\n            const m = url.pathname.match(/^\\/items\\/([^/]+)\\/?$/i);\n            if (!m) return null;\n            const id = decodeURIComponent(m[1]);\n            return { id, css: `https://fontsapi.zeoseven.com/${encodeURIComponent(id)}/main/result.css`, pageUrl: `https://fonts.zeoseven.com/items/${encodeURIComponent(id)}/` };\n        }\n        const m = url.pathname.match(/^\\/([^/]+)\\/main\\/result\\.css$/i);\n        if (!m) return null;\n        const id = decodeURIComponent(m[1]);\n        return { id, css: url.href, pageUrl: `https://fonts.zeoseven.com/items/${encodeURIComponent(id)}/` };\n    };\n\n    const ensureZeoFontLoaded = (font) => {\n        if (!font?.css || !font?.family) return Promise.resolve(false);\n        if (loadedFontCss.has(font.css)) return Promise.resolve(true);\n        if (loadingFontCss.has(font.css)) return loadingFontCss.get(font.css);\n\n        const promise = new Promise((resolve) => {\n            let settled = false;\n            let timer = null;\n            const finish = (ok) => {\n                if (settled) return;\n                settled = true;\n                if (timer) clearTimeout(timer);\n                if (ok) loadedFontCss.add(font.css);\n                loadingFontCss.delete(font.css);\n                resolve(ok);\n            };\n\n            const id = 'fm-zeofont-' + btoa(unescape(encodeURIComponent(font.css))).replace(/[^a-zA-Z0-9]/g,'').slice(-28);\n            const old = targetDoc.getElementById(id);\n            if (old) { loadedFontCss.add(font.css); finish(true); return; }\n\n            const link = targetDoc.createElement('link');\n            link.id = id;\n            link.rel = 'stylesheet';\n            link.href = font.css;\n            link.crossOrigin = 'anonymous';\n            timer = setTimeout(() => finish(false), 7000);\n            link.onload = async () => {\n                try {\n                    if (targetDoc.fonts?.load) {\n                        await Promise.race([\n                            targetDoc.fonts.load(`16px \"${font.family.replace(/\"/g, '\\\\\"')}\"`),\n                            new Promise(r => setTimeout(r, 1800))\n                        ]);\n                    }\n                } catch (_) {}\n                finish(true);\n            };\n            link.onerror = () => finish(false);\n            (targetDoc.head || targetDoc.documentElement).appendChild(link);\n        });\n\n        loadingFontCss.set(font.css, promise);\n        return promise;\n    };\n\n    const setLrcFontVisual = (font) => {\n        const family = font?.family || '';\n        const safeFamily = family ? `\"${family.replace(/\"/g,'\\\\\"')}\"` : '';\n        UI.wrapper.style.setProperty('--fm-lrc-family', safeFamily || 'var(--fm-font)');\n        const lyricRoots = [UI.outLyrics, UI.outLyricsScroll, UI.outLyricsScrollList].filter(Boolean);\n        lyricRoots.forEach(root => {\n            root.style.setProperty('font-family', safeFamily || 'var(--fm-font)', 'important');\n            root.querySelectorAll('*').forEach(el => el.style.setProperty('font-family', safeFamily || 'var(--fm-font)', 'important'));\n        });\n        if (UI.lrcFontCurrent) {\n            UI.lrcFontCurrent.value = font?.name || '默认字体';\n            UI.lrcFontCurrent.style.fontFamily = safeFamily || '';\n        }\n    };\n\n    const applyLrcFont = (font, persist = true) => {\n        setLrcFontVisual(font);\n        if (persist) {\n            savedSettings.lrcFontName = font?.name || '默认字体';\n            savedSettings.lrcFontFamily = font?.family || '';\n            savedSettings.lrcFontCss = font?.css || '';\n            savedSettings.lrcFontId = font?.id || '';\n            savedSettings.lrcFontUrl = font?.pageUrl || '';\n            scheduleSettingsSave();\n        }\n    };\n\n    const getSavedLrcFont = () => {\n        if (savedSettings.lrcFontName === '默认字体' || !savedSettings.lrcFontFamily || !savedSettings.lrcFontCss) return null;\n        return {\n            id: savedSettings.lrcFontId || '',\n            name: savedSettings.lrcFontName,\n            family: savedSettings.lrcFontFamily,\n            css: savedSettings.lrcFontCss,\n            pageUrl: savedSettings.lrcFontUrl || ''\n        };\n    };\n\n    // 恢复播放器原本的桌面歌词字体：清除当前自定义字体样式与保存项，\n    // 但不影响其他外观、歌词字号/位置、歌单或播放器字体。\n    const resetLrcFontToDefault = () => {\n        try {\n            targetDoc.querySelectorAll('link[id^=\"fm-zeofont-\"]').forEach(link => {\n                try { link.remove(); } catch (_) {}\n            });\n            targetDoc.querySelectorAll('link[id^=\"fm-zeofont-inspect-\"]').forEach(link => {\n                try { link.remove(); } catch (_) {}\n            });\n        } catch (_) {}\n\n        loadedFontCss.clear();\n        loadingFontCss.clear();\n        savedSettings.lrcFontName = '默认字体';\n        savedSettings.lrcFontFamily = '';\n        savedSettings.lrcFontCss = '';\n        savedSettings.lrcFontId = '';\n        savedSettings.lrcFontUrl = '';\n        if (UI.lrcFontUrl) UI.lrcFontUrl.value = '';\n        applyLrcFont(null, true);\n        API.toast('已恢复默认字体');\n    };\n\n    const importZeoSevenFont = async () => {\n        const raw = UI.lrcFontUrl?.value.trim();\n        if (!raw) { API.toast('请先粘贴 ZeoSeven 字体网址'); return; }\n        const parsed = parseZeoSevenUrl(raw);\n        if (!parsed) {\n            API.toast('请输入 ZeoSeven 字体详情页网址，例如 https://fonts.zeoseven.com/items/217/');\n            return;\n        }\n\n        const btn = UI.lrcFontImport;\n        if (btn) { btn.disabled = true; btn.textContent = '加载中'; }\n        try {\n            // 关键：直接加载 FontsAPI CSS，再从已经加载的 stylesheet 读取 @font-face。\n            // 不再 fetch ZeoSeven 页面，避免 Tauri/WebView 的跨域 fetch 导致导入失败。\n            const family = await loadZeoCssAndReadFamily(parsed.css, 7000);\n            if (!family) {\n                API.toast('字体 CSS 已请求，但没有读取到 font-family；请检查该字体的 FontsAPI 是否可用');\n                return;\n            }\n\n            const name = family;\n            const font = { id: parsed.id, name, family, css: parsed.css, pageUrl: parsed.pageUrl };\n            const ok = await ensureZeoFontLoaded(font);\n            if (!ok) { API.toast('字体加载失败，请检查网络后重试'); return; }\n\n            applyLrcFont(font, true);\n            if (UI.lrcFontUrl) UI.lrcFontUrl.value = parsed.pageUrl;\n            API.toast(`已导入并应用：${name}`);\n        } catch (err) {\n            console.warn('[ArV] ZeoSeven font import failed:', err);\n            API.toast('字体导入失败，请检查网址和网络连接');\n        } finally {\n            if (btn) { btn.disabled = false; btn.textContent = '导入'; }\n        }\n    };\n\n    // 防止误点/连点导致字体导入流程重复启动；不会触碰歌单导入按钮。\n    let isImportingZeoFont = false;\n    const originalImportZeoSevenFont = importZeoSevenFont;\n    const guardedImportZeoSevenFont = async () => {\n        if (isImportingZeoFont) return;\n        isImportingZeoFont = true;\n        try {\n            await originalImportZeoSevenFont();\n        } finally {\n            isImportingZeoFont = false;\n            if (UI.lrcFontImport) {\n                UI.lrcFontImport.disabled = false;\n                UI.lrcFontImport.textContent = '导入';\n            }\n        }\n    };\n    UI.lrcFontImport?.addEventListener('click', guardedImportZeoSevenFont);\n    UI.lrcFontUrl?.addEventListener('keydown', (e) => {\n        if (e.key === 'Enter') guardedImportZeoSevenFont();\n    });\n\n    UI.lrcFontReset?.addEventListener('click', resetLrcFontToDefault);\n\n    // 自定义歌词字体不在酒馆启动阶段请求。\n    // 第一次打开播放器时再恢复，避免脚本加载阶段产生网络请求与字体解析。\n    const restoreSavedLrcFontWhenOpened = () => {\n        const savedLrcFont = getSavedLrcFont();\n        if (savedLrcFont) {\n            ensureZeoFontLoaded(savedLrcFont).then(ok => {\n                if (ok) setLrcFontVisual(savedLrcFont);\n            });\n        } else {\n            setLrcFontVisual(null);\n        }\n    };\n\n    // ================= 页面导航 =================\n    UI.themeDots.forEach(dot => dot.classList.toggle('active', dot.dataset.theme === STATE.currentTheme));\n\n    const pageEls = wrapper.querySelectorAll('.fm-page');\n    const navEls = wrapper.querySelectorAll('.fm-nav-btn');\n\n    function switchPlayerPage(pageName) {\n        pageEls.forEach(page => page.classList.toggle('active', page.dataset.page === pageName));\n        navEls.forEach(btn => btn.classList.toggle('active', btn.dataset.pageTarget === pageName));\n    }\n\n    navEls.forEach(btn => btn.addEventListener('click', () => switchPlayerPage(btn.dataset.pageTarget)));\n    const quickLibraryBtn = wrapper.querySelector('#fm-quick-library-btn');\n    if (quickLibraryBtn) quickLibraryBtn.addEventListener('click', () => {\n        switchPlayerPage('play');\n        const playlistSection = wrapper.querySelector('#fm-playlist-section');\n        if (playlistSection) playlistSection.scrollIntoView({ behavior: 'smooth', block: 'start' });\n    });\n\n    // ================= 核心逻辑 =================\n\n    // 拖拽与面板定位\n    function initDraggable() {\n        let isDragging = false;\n        let startX, startY, initialLeft, initialTop;\n        let currentX, currentY;\n        let rafId = null;\n        let panelOffsetX = 0, panelOffsetY = 0;\n        \n        const initX = targetWin.innerWidth - 120;\n        const initY = CONFIG.SAFE_MARGIN + 60;\n        UI.ball.style.left = `${initX}px`;\n        UI.ball.style.top = `${initY}px`;\n\n        const updatePos = () => {\n            if (!isDragging) return;\n            const dx = currentX - startX;\n            const dy = currentY - startY;\n            \n            if (Math.abs(dx) > 3 || Math.abs(dy) > 3) UI.ball.setAttribute('data-dragged', 'true');\n\n            let newLeft = initialLeft + dx;\n            let newTop = initialTop + dy;\n            \n            const currentSize = parseInt(savedSettings.ballSize) || 50;\n            const maxLeft = targetWin.innerWidth - currentSize - CONFIG.SAFE_MARGIN;\n            const maxTop = targetWin.innerHeight - currentSize - CONFIG.SAFE_MARGIN;\n            \n            newLeft = Math.max(CONFIG.SAFE_MARGIN, Math.min(newLeft, maxLeft));\n            newTop = Math.max(CONFIG.SAFE_MARGIN, Math.min(newTop, maxTop));\n\n            UI.ball.style.left = `${newLeft}px`;\n            UI.ball.style.top = `${newTop}px`;\n            \n            if (STATE.isExpanded) {\n                const panelWidth = UI.panel.offsetWidth;\n                const panelHeight = UI.panel.offsetHeight || 540;\n                let pLeft = newLeft - panelOffsetX;\n                let pTop = newTop - panelOffsetY;\n                \n                pLeft = Math.max(CONFIG.SAFE_MARGIN, Math.min(pLeft, targetWin.innerWidth - panelWidth - CONFIG.SAFE_MARGIN));\n                pTop = Math.max(CONFIG.SAFE_MARGIN, Math.min(pTop, targetWin.innerHeight - panelHeight - CONFIG.SAFE_MARGIN));\n                \n                UI.panel.style.left = `${pLeft}px`;\n                UI.panel.style.top = `${pTop}px`;\n            }\n            rafId = null;\n        };\n\n        const onDown = (e) => {\n            if (e.button !== 0) return;\n            isDragging = true;\n            UI.ball.setAttribute('data-dragged', 'false');\n            UI.ball.style.transition = 'none';\n\n            const rect = UI.ball.getBoundingClientRect();\n            initialLeft = rect.left;\n            initialTop = rect.top;\n            startX = e.clientX; startY = e.clientY;\n            currentX = startX; currentY = startY;\n            \n            if (STATE.isExpanded) {\n                const pRect = UI.panel.getBoundingClientRect();\n                panelOffsetX = initialLeft - pRect.left;\n                panelOffsetY = initialTop - pRect.top;\n                UI.panel.style.transition = 'none';\n            }\n\n            targetDoc.addEventListener('pointermove', onMove);\n            targetDoc.addEventListener('pointerup', onUp);\n            targetDoc.addEventListener('pointercancel', onUp);\n            UI.ball.setPointerCapture(e.pointerId);\n        };\n\n        const onMove = (e) => {\n            if (!isDragging) return;\n            currentX = e.clientX; currentY = e.clientY;\n            if (!rafId) rafId = requestAnimationFrame(updatePos);\n        };\n\n        const onUp = (e) => {\n            if (!isDragging) return;\n            if (rafId) { cancelAnimationFrame(rafId); rafId = null; updatePos(); }\n            isDragging = false;\n            targetDoc.removeEventListener('pointermove', onMove);\n            targetDoc.removeEventListener('pointerup', onUp);\n            targetDoc.removeEventListener('pointercancel', onUp);\n            try { UI.ball.releasePointerCapture(e.pointerId); } catch (err) {}\n            requestAnimationFrame(() => { \n                UI.ball.style.transition = ''; \n                if (STATE.isExpanded) UI.panel.style.transition = '';\n            });\n\n            if (UI.ball.getAttribute('data-dragged') === 'false') togglePanel();\n        };\n\n        UI.ball.addEventListener('pointerdown', onDown);\n    }\n\n    // 修复：壁纸自适应与边界限制\n    function togglePanel() {\n        STATE.isExpanded = !STATE.isExpanded;\n        const currentSize = parseInt(savedSettings.ballSize) || 50;\n        \n        if (STATE.isExpanded) {\n            if (typeof setPlayerRuntimeSleeping === 'function') setPlayerRuntimeSleeping(false);\n            preparePlaylistsForUI();\n            if (!STATE.uiInitialized) {\n                STATE.uiInitialized = true;\n                initDraggable();\n                initProgressBar();\n                renderListUI();\n                restoreSavedLrcFontWhenOpened();\n                if (startupDedupeCount > 0 || startupLimitCount > 0) {\n                    let msg = `[优化] 启动清理完成：`;\n                    if (startupDedupeCount > 0) msg += `移除 ${startupDedupeCount} 首重复歌曲。`;\n                    if (startupLimitCount > 0) msg += `截断 ${startupLimitCount} 首超出容量限制的歌曲。`;\n                    API.toast(msg);\n                }\n            }\n            applySettings(); \n            \n            // 使用实际 CSS 宽度，避免小屏 max-width 与 JS 估算不一致。\n            const panelWidth = Math.min(UI.panel.offsetWidth || 400, targetWin.innerWidth - CONFIG.SAFE_MARGIN * 2);\n            \n            let estimatedHeight = 540;\n            if (savedSettings.panelRatio === '3:4') {\n                estimatedHeight = panelWidth * (4/3);\n            } else if (savedSettings.panelRatio === '9:16') {\n                estimatedHeight = panelWidth * (16/9);\n            } else if (savedSettings.panelRatio === 'default' && savedSettings.bgImageWidth && savedSettings.bgImageHeight) {\n                // 严格根据图片原始比例计算\n                estimatedHeight = panelWidth * (savedSettings.bgImageHeight / savedSettings.bgImageWidth);\n            }\n            \n            // 强力边界约束：无论计算出多高，绝对不能超出屏幕\n            const maxAllowedHeight = targetWin.innerHeight - (CONFIG.SAFE_MARGIN * 2);\n            const panelHeight = Math.min(estimatedHeight, maxAllowedHeight);\n            \n            // 应用计算后的高度\n            UI.panel.style.height = `${panelHeight}px`;\n            \n            let pLeft = targetWin.innerWidth / 2 - panelWidth / 2;\n            let pTop = targetWin.innerHeight / 2 - panelHeight / 2;\n            \n            pLeft = Math.max(CONFIG.SAFE_MARGIN, Math.min(pLeft, targetWin.innerWidth - panelWidth - CONFIG.SAFE_MARGIN));\n            pTop = Math.max(CONFIG.SAFE_MARGIN, Math.min(pTop, targetWin.innerHeight - panelHeight - CONFIG.SAFE_MARGIN));\n            \n            UI.panel.style.left = `${pLeft}px`;\n            UI.panel.style.top = `${pTop}px`;\n            \n            let bLeft, bTop;\n            if (targetWin.innerHeight - (pTop + panelHeight) < 100) {\n                bLeft = pLeft + panelWidth - currentSize / 2;\n                bTop = pTop + panelHeight - currentSize / 2;\n            } else {\n                bLeft = pLeft - currentSize / 2;\n                bTop = pTop - currentSize / 2;\n            }\n            \n            bLeft = Math.max(CONFIG.SAFE_MARGIN, Math.min(bLeft, targetWin.innerWidth - currentSize - CONFIG.SAFE_MARGIN));\n            bTop = Math.max(CONFIG.SAFE_MARGIN, Math.min(bTop, targetWin.innerHeight - currentSize - CONFIG.SAFE_MARGIN));\n            \n            UI.ball.style.left = `${bLeft}px`;\n            UI.ball.style.top = `${bTop}px`;\n            \n            UI.ball.innerHTML = '<i class=\"fas fa-times\"></i>';\n            UI.ball.classList.remove('playing');\n            UI.panel.classList.add('open');\n        } else {\n            if (typeof setPlayerRuntimeSleeping === 'function') setPlayerRuntimeSleeping(true);\n            UI.panel.classList.remove('open');\n            UI.ball.innerHTML = '<i class=\"fas fa-music\"></i>';\n            if (STATE.isPlaying) UI.ball.classList.add('playing');\n        }\n    }\n\n    // 进度条逻辑\n    function withCacheBust(url) {\n        if (!url) return url;\n        try {\n            const u = new URL(url, targetWin.location.href);\n            u.searchParams.set('_t', Date.now());\n            return u.toString();\n        } catch (e) {\n            return url + (url.includes('?') ? '&' : '?') + '_t=' + Date.now();\n        }\n    }\n    function formatTime(sec) {\n        if (!isFinite(sec) || isNaN(sec) || sec < 0) return '0:00';\n        const m = Math.floor(sec / 60);\n        const s = Math.floor(sec % 60);\n        return `${m}:${s < 10 ? '0' : ''}${s}`;\n    }\n\n    function updateProgressUI(current, duration) {\n        const pct = (duration && isFinite(duration) && duration > 0) ? Math.min(100, Math.max(0, (current / duration) * 100)) : 0;\n        UI.progressFill.style.width = `${pct}%`;\n        UI.progressThumb.style.left = `${pct}%`;\n        UI.timeCurrent.textContent = formatTime(current);\n        UI.timeDuration.textContent = formatTime(duration);\n    }\n\n    function initProgressBar() {\n        const track = UI.progressTrack;\n        const ratioFromEvent = (e) => {\n            const rect = track.getBoundingClientRect();\n            const x = e.clientX - rect.left;\n            return Math.min(1, Math.max(0, x / rect.width));\n        };\n        const applyRatio = (ratio) => {\n            const duration = audio.duration;\n            UI.progressFill.style.width = `${ratio * 100}%`;\n            UI.progressThumb.style.left = `${ratio * 100}%`;\n            if (duration && isFinite(duration)) UI.timeCurrent.textContent = formatTime(ratio * duration);\n            return duration;\n        };\n\n        const onDown = (e) => {\n            if (e.button !== undefined && e.button !== 0) return;\n            if (!audio.duration || !isFinite(audio.duration)) return;\n            STATE.isSeekingProgress = true;\n            track.classList.add('dragging');\n            applyRatio(ratioFromEvent(e));\n            track.setPointerCapture(e.pointerId);\n            track.addEventListener('pointermove', onMove);\n            track.addEventListener('pointerup', onUp);\n            track.addEventListener('pointercancel', onUp);\n        };\n        const onMove = (e) => { if (STATE.isSeekingProgress) applyRatio(ratioFromEvent(e)); };\n        const onUp = (e) => {\n            if (!STATE.isSeekingProgress) return;\n            const duration = applyRatio(ratioFromEvent(e));\n            if (duration && isFinite(duration)) audio.currentTime = ratioFromEvent(e) * duration;\n            STATE.isSeekingProgress = false;\n            track.classList.remove('dragging');\n            track.removeEventListener('pointermove', onMove);\n            track.removeEventListener('pointerup', onUp);\n            track.removeEventListener('pointercancel', onUp);\n            try { track.releasePointerCapture(e.pointerId); } catch (err) {}\n        };\n        track.addEventListener('pointerdown', onDown);\n    }\n\n    // 列表渲染逻辑\n    function renderTabs() {\n        UI.playlistTabs.innerHTML = '';\n\n        if (!STATE.isPlaylistHome) {\n            const current = getCurrentPlaylist();\n            const color = getPlaylistColor(current);\n\n            const head = targetDoc.createElement('div');\n            head.className = 'fm-playlist-detail-head';\n            const back = targetDoc.createElement('button');\n            back.className = 'fm-playlist-back';\n            back.type = 'button';\n            back.innerHTML = '<i class=\"fas fa-chevron-left\"></i><span>歌单</span>';\n            back.onclick = (e) => {\n                e.preventDefault(); e.stopPropagation();\n                STATE.isPlaylistHome = true;\n                STATE.isShowingSearch = false;\n                renderListUI();\n            };\n            const title = targetDoc.createElement('div');\n            title.className = 'fm-playlist-detail-title';\n            title.textContent = current ? current.name : '歌单';\n            const manage = targetDoc.createElement('button');\n            manage.className = 'fm-playlist-manage-btn';\n            manage.type = 'button';\n            manage.title = '管理歌单';\n            manage.innerHTML = '<i class=\"fas fa-ellipsis-h\"></i>';\n            manage.onclick = (e) => { e.preventDefault(); e.stopPropagation(); showPlaylistManageMenu(e, current); };\n            head.append(back, title, manage);\n            UI.playlistTabs.appendChild(head);\n\n            if (current) {\n                const hero = targetDoc.createElement('div');\n                hero.className = 'fm-playlist-hero';\n                hero.style.setProperty('--playlist-color', color);\n\n                const cover = targetDoc.createElement('div');\n                cover.className = 'fm-playlist-hero-cover';\n                renderPlaylistCover(cover, current);\n\n                const info = targetDoc.createElement('div');\n                info.className = 'fm-playlist-hero-info';\n                const name = targetDoc.createElement('div');\n                name.className = 'fm-playlist-hero-name';\n                name.textContent = current.name;\n                const count = targetDoc.createElement('div');\n                count.className = 'fm-playlist-hero-count';\n                count.textContent = `${current.tracks.length} 首歌曲`;\n                const desc = targetDoc.createElement('div');\n                desc.className = 'fm-playlist-hero-desc';\n                desc.textContent = current.description || '还没有写歌单简介';\n                info.append(name, count, desc);\n\n                const playAll = targetDoc.createElement('button');\n                playAll.className = 'fm-playlist-playall';\n                playAll.type = 'button';\n                playAll.innerHTML = '<i class=\"fas fa-play\"></i><span>播放全部</span>';\n                playAll.onclick = (e) => {\n                    e.preventDefault(); e.stopPropagation();\n                    if (!current.tracks.length) { API.toast('这个歌单还没有歌曲'); return; }\n                    playTrack(0, current.id);\n                };\n\n                hero.append(cover, info, playAll);\n                UI.playlistTabs.appendChild(hero);\n            }\n            return;\n        }\n\n        const title = targetDoc.createElement('div');\n        title.className = 'fm-playlist-detail-title';\n        title.style.cssText = 'padding:4px 2px 3px;font-size:14px;';\n        title.textContent = '我的歌单';\n        UI.playlistTabs.appendChild(title);\n\n        STATE.playlists.forEach(p => {\n            const color = getPlaylistColor(p);\n            const row = targetDoc.createElement('div');\n            row.className = 'fm-playlist-row';\n            row.setAttribute('role', 'button');\n            row.tabIndex = 0;\n            row.style.setProperty('--playlist-color', color);\n\n            const cover = targetDoc.createElement('div');\n            cover.className = 'fm-playlist-row-cover';\n            renderPlaylistCover(cover, p);\n\n            const info = targetDoc.createElement('div');\n            info.className = 'fm-playlist-row-info';\n            const name = targetDoc.createElement('div');\n            name.className = 'fm-playlist-row-name';\n            name.textContent = p.name;\n            const count = targetDoc.createElement('div');\n            count.className = 'fm-playlist-row-count';\n            count.textContent = `${p.tracks.length} 首歌曲${p.description ? ' · 有简介' : ''}`;\n            info.append(name, count);\n\n            const manage = targetDoc.createElement('button');\n            manage.className = 'fm-playlist-row-manage';\n            manage.type = 'button';\n            manage.title = '管理歌单';\n            manage.innerHTML = '<i class=\"fas fa-ellipsis-v\"></i>';\n            manage.onclick = (e) => { e.preventDefault(); e.stopPropagation(); showPlaylistManageMenu(e, p); };\n\n            row.append(cover, info, manage);\n            const open = () => {\n                STATE.currentPlaylistId = p.id;\n                STATE.isShowingSearch = false;\n                STATE.isPlaylistHome = false;\n                renderListUI();\n            };\n            row.addEventListener('click', open);\n            row.addEventListener('keydown', (e) => {\n                if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); open(); }\n            });\n            UI.playlistTabs.appendChild(row);\n        });\n\n        const addRow = targetDoc.createElement('div');\n        addRow.className = 'fm-playlist-add-row';\n        addRow.setAttribute('role', 'button');\n        addRow.innerHTML = '<i class=\"fas fa-plus\"></i><span>新建歌单</span>';\n        addRow.onclick = (e) => {\n            e.preventDefault(); e.stopPropagation();\n            const name = targetWin.prompt('请输入新歌单名称：', '新建歌单');\n            if (!name || !name.trim()) return;\n            const newId = 'pl_' + Date.now() + '_' + Math.random().toString(36).slice(2, 7);\n            STATE.playlists.push({ id: newId, name: name.trim(), description: '', cover: '', color: DEFAULT_PLAYLIST_COLORS[STATE.playlists.length % DEFAULT_PLAYLIST_COLORS.length], tracks: [] });\n            STATE.currentPlaylistId = newId;\n            STATE.isShowingSearch = false;\n            STATE.isPlaylistHome = false;\n            savePlaylist();\n            renderListUI();\n        };\n        UI.playlistTabs.appendChild(addRow);\n    }\n\n    function showPlaylistManageMenu(e, playlist) {\n        if (!playlist) return;\n        e.stopPropagation();\n        UI.popMenu.innerHTML = '';\n        const items = [\n            ['fas fa-pen', '重命名', () => editPlaylistName(playlist)],\n            ['fas fa-align-left', '编辑简介', () => editPlaylistDescription(playlist)],\n            ['fas fa-image', '更换封面', () => editPlaylistCover(playlist)],\n            ['fas fa-palette', '更换颜色', () => editPlaylistColor(playlist)]\n        ];\n        if (playlist.cover) items.push(['fas fa-trash-alt', '恢复默认封面', () => clearPlaylistCover(playlist)]);\n        if (playlist.id !== 'default') items.push(['fas fa-times', '删除歌单', () => {\n            if (!targetWin.confirm(`确定要删除歌单 [${playlist.name}] 吗？`)) return;\n            STATE.playlists = STATE.playlists.filter(list => list.id !== playlist.id);\n            if (STATE.currentPlaylistId === playlist.id) STATE.currentPlaylistId = 'default';\n            if (STATE.playingPlaylistId === playlist.id) {\n                audio.pause(); STATE.playingPlaylistId = 'default'; STATE.currentIndex = -1;\n            }\n            STATE.isPlaylistHome = true;\n            savePlaylist(); renderListUI();\n        }]);\n        items.forEach(([icon, label, action]) => {\n            const item = targetDoc.createElement('div');\n            item.className = 'fm-pop-item fm-playlist-menu-item';\n            item.innerHTML = `<i class=\"${icon}\"></i><span>${label}</span>`;\n            item.onclick = () => { UI.popMenu.classList.remove('show'); action(); };\n            UI.popMenu.appendChild(item);\n        });\n        const rect = e.currentTarget?.getBoundingClientRect?.() || e.target.getBoundingClientRect();\n        const estimatedMenuHeight = items.length * 34 + 10;\n        const menuWidth = 150;\n        let top = rect.bottom + 4;\n        if (top + estimatedMenuHeight > targetWin.innerHeight - 10) top = rect.top - estimatedMenuHeight - 4;\n        let left = rect.right - menuWidth;\n        left = Math.max(10, Math.min(left, targetWin.innerWidth - menuWidth - 10));\n        top = Math.max(10, Math.min(top, targetWin.innerHeight - estimatedMenuHeight - 10));\n        UI.popMenu.style.top = `${top}px`;\n        UI.popMenu.style.left = `${left}px`;\n        UI.popMenu.classList.add('show');\n    }\n\n    // 事件发生在 Shadow DOM 内，监听 wrapper 比监听宿主 document 更可靠。\n    wrapper.addEventListener('click', (e) => {\n        if (!e.target.closest('#fm-pop-menu') && !e.target.closest('.fm-icon-btn')) {\n            UI.popMenu.classList.remove('show');\n        }\n    });\n\n    // 修复：下拉菜单越界适配\n    function showAddMenu(e, track, actionType = 'add', sourceIndex = -1, sourcePlaylistId = null) {\n        e.stopPropagation();\n        \n        const availablePlaylists = actionType === 'move' \n            ? STATE.playlists.filter(p => p.id !== sourcePlaylistId)\n            : STATE.playlists;\n\n        if (availablePlaylists.length === 0) {\n            API.toast(\"没有其他歌单可供移动\");\n            return;\n        }\n\n        if (availablePlaylists.length === 1 && actionType === 'add') {\n            addTrackToPlaylist(track, availablePlaylists[0].id);\n            return;\n        }\n\n        UI.popMenu.innerHTML = '';\n        availablePlaylists.forEach(p => {\n            const item = targetDoc.createElement('div');\n            item.className = 'fm-pop-item';\n            item.textContent = `${actionType === 'move' ? '移动' : '添加'}至: ${p.name}`;\n            item.onclick = () => {\n                if (actionType === 'move') {\n                    moveTrackToPlaylist(track, sourceIndex, sourcePlaylistId, p.id);\n                } else {\n                    addTrackToPlaylist(track, p.id);\n                }\n                UI.popMenu.classList.remove('show');\n            };\n            UI.popMenu.appendChild(item);\n        });\n\n        // 智能定位：使用 fixed 定位，完全相对于视口计算，摆脱面板边界束缚\n        const anchor = e.target.closest?.('.fm-icon-btn, button') || e.currentTarget;\n        const rect = anchor.getBoundingClientRect();\n        \n        // 预估菜单高度（每项约32px，最大200px）\n        const estimatedMenuHeight = Math.min(availablePlaylists.length * 32 + 10, 200);\n        \n        let top;\n        // 如果点击位置距离视口底部不足以放下菜单，则向上展开\n        if (rect.bottom + estimatedMenuHeight > targetWin.innerHeight - 10) {\n            top = rect.top - estimatedMenuHeight;\n        } else {\n            top = rect.bottom;\n        }\n        \n        const menuWidth = 140;\n        let left = rect.left - 100;\n        left = Math.max(10, Math.min(left, targetWin.innerWidth - menuWidth - 10));\n        top = Math.max(10, Math.min(top, targetWin.innerHeight - estimatedMenuHeight - 10));\n        \n        UI.popMenu.style.top = `${top}px`;\n        UI.popMenu.style.left = `${left}px`;\n        UI.popMenu.classList.add('show');\n    }\n\n    function addTrackToPlaylist(track, playlistId) {\n        const targetList = STATE.playlists.find(p => p.id === playlistId);\n        if (targetList) {\n            if (targetList.tracks.length >= CONFIG.MAX_TRACKS_PER_LIST) {\n                API.toast(`歌单 [${targetList.name}] 已达到上限 (${CONFIG.MAX_TRACKS_PER_LIST}首)，无法继续添加`);\n                return;\n            }\n            const exists = targetList.tracks.some(t => trackDedupeKey(t) === trackDedupeKey(track));\n            if (exists) {\n                API.toast(`《${track.title}》已经在 [${targetList.name}] 里了，没有重复添加`);\n                STATE.isShowingSearch = false;\n                renderListUI();\n                return;\n            }\n            targetList.tracks.push(track);\n            savePlaylist();\n            API.toast(`已添加至 [${targetList.name}]`);\n            STATE.isShowingSearch = false;\n            STATE.currentPlaylistId = playlistId;\n            STATE.isPlaylistHome = false;\n            renderListUI();\n            \n            if (STATE.currentIndex === -1 && STATE.playingPlaylistId === playlistId) {\n                playTrack(targetList.tracks.length - 1, playlistId);\n            }\n        }\n    }\n\n    function moveTrackToPlaylist(track, sourceIndex, sourcePlaylistId, targetPlaylistId) {\n        const sourceList = STATE.playlists.find(p => p.id === sourcePlaylistId);\n        const targetList = STATE.playlists.find(p => p.id === targetPlaylistId);\n        \n        if (sourceList && targetList && sourceIndex >= 0) {\n            if (targetList.tracks.length >= CONFIG.MAX_TRACKS_PER_LIST) {\n                API.toast(`目标歌单已达到上限 (${CONFIG.MAX_TRACKS_PER_LIST}首)，无法移动`);\n                return;\n            }\n            sourceList.tracks.splice(sourceIndex, 1);\n            \n            if (STATE.playingPlaylistId === sourcePlaylistId) {\n                if (sourceIndex === STATE.currentIndex) {\n                    audio.pause();\n                    if (sourceList.tracks.length > 0) playTrack(sourceIndex % sourceList.tracks.length, sourcePlaylistId);\n                    else {\n                        STATE.currentIndex = -1;\n                        UI.title.textContent = '播放器测试';\n                        UI.artist.textContent = 'Awaiting Connection...';\n                        UI.outLyrics.innerHTML = '';\n                    }\n                } else if (sourceIndex < STATE.currentIndex) {\n                    STATE.currentIndex--;\n                }\n            }\n\n            targetList.tracks.push(track);\n            savePlaylist();\n            API.toast(`已移动至 [${targetList.name}]`);\n            renderListUI();\n        }\n    }\n\n    function renderListUI() {\n        renderTabs();\n        UI.playlistEl.innerHTML = '';\n\n        if (STATE.isPlaylistHome && !STATE.isShowingSearch) {\n            return;\n        }\n        \n        if (STATE.isShowingSearch) {\n            const header = targetDoc.createElement('div');\n            header.className = 'fm-search-header';\n            header.innerHTML = `<span>搜索结果 (${STATE.searchResults.length})</span><span class=\"fm-back-list\">返回列表</span>`;\n            header.querySelector('.fm-back-list').onclick = () => {\n                STATE.isShowingSearch = false;\n                STATE.isPlaylistHome = true;\n                renderListUI();\n            };\n            UI.playlistEl.appendChild(header);\n\n            if (STATE.searchResults.length === 0) {\n                UI.playlistEl.innerHTML += '<div style=\"padding:16px;text-align:center;color:var(--fm-text-sub);font-size:12px;\">未找到相关歌曲</div>';\n                return;\n            }\n\n            STATE.searchResults.forEach((track, index) => {\n                const item = targetDoc.createElement('div');\n                item.className = 'fm-item';\n                item.innerHTML = `\n                    <div class=\"fm-item-info\">\n                        <span class=\"fm-item-title\">${escapeHTML(track.title)}</span>\n                        <span class=\"fm-item-artist\">${escapeHTML(track.artist)} · ${track.source === 'netease' ? '网易云' : '其他'}</span>\n                    </div>\n                    <div class=\"fm-item-actions\">\n                        <button class=\"fm-icon-btn\" title=\"添加至歌单\"><i class=\"fas fa-plus\"></i></button>\n                    </div>\n                `;\n                item.querySelector('.fm-icon-btn').onclick = (e) => showAddMenu(e, track, 'add');\n                UI.playlistEl.appendChild(item);\n            });\n        } else {\n            const currentListObj = getCurrentPlaylist();\n            const currentTracks = currentListObj.tracks;\n            UI.playlistEl.style.setProperty('--playlist-color', getPlaylistColor(currentListObj));\n\n            if (currentTracks.length === 0) {\n                UI.playlistEl.innerHTML = '<div style=\"padding:16px;text-align:center;color:var(--fm-text-sub);font-size:12px;\">列表为空，请导入或搜索</div>';\n                return;\n            }\n\n            let listToRender = currentTracks.map((track, index) => ({ track, index }));\n            if (STATE.currentInputMode === 'search_local' && STATE.localSearchKeyword) {\n                listToRender = listToRender.filter(item => \n                    item.track.title.toLowerCase().includes(STATE.localSearchKeyword) || \n                    item.track.artist.toLowerCase().includes(STATE.localSearchKeyword)\n                );\n            }\n\n            const header = targetDoc.createElement('div');\n            header.className = 'fm-search-header';\n            \n            if (STATE.currentInputMode === 'search_local' && STATE.localSearchKeyword) {\n                header.innerHTML = `<span>搜索结果 (${listToRender.length})</span><span class=\"fm-clear-list\">清除搜索</span>`;\n                header.querySelector('.fm-clear-list').onclick = () => {\n                    STATE.localSearchKeyword = '';\n                    UI.input.value = '';\n                    renderListUI();\n                };\n            } else {\n                header.innerHTML = `<span>${currentListObj.name} (${currentTracks.length})</span><span class=\"fm-clear-list\">清空列表</span>`;\n                header.querySelector('.fm-clear-list').onclick = () => {\n                    if (confirm(`确定清空 [${currentListObj.name}] 吗？`)) {\n                        currentListObj.tracks = [];\n                        savePlaylist();\n                        if (STATE.playingPlaylistId === currentListObj.id) {\n                            audio.pause();\n                            STATE.currentIndex = -1;\n                            UI.title.textContent = '播放器测试';\n                            UI.artist.textContent = 'Awaiting Connection...';\n                            UI.outLyrics.innerHTML = '';\n                        }\n                        renderListUI();\n                        API.toast(\"列表已清空\");\n                    }\n                };\n            }\n            UI.playlistEl.appendChild(header);\n\n            if (listToRender.length === 0) {\n                UI.playlistEl.innerHTML += '<div style=\"padding:16px;text-align:center;color:var(--fm-text-sub);font-size:12px;\">未找到匹配的歌曲</div>';\n                return;\n            }\n\n            listToRender.forEach(({ track, index }) => {\n                const isActive = (STATE.playingPlaylistId === currentListObj.id && index === STATE.currentIndex);\n                const item = targetDoc.createElement('div');\n                item.className = `fm-item ${isActive ? 'active' : ''}`;\n                item.innerHTML = `\n                    <div class=\"fm-item-info\">\n                        <span class=\"fm-item-title\">${escapeHTML(track.title)}</span>\n                        <span class=\"fm-item-artist\">${escapeHTML(track.artist)}</span>\n                    </div>\n                    <div class=\"fm-item-actions\">\n                        <button class=\"fm-icon-btn move\" title=\"移动至其他歌单\"><i class=\"fas fa-exchange-alt\"></i></button>\n                        <button class=\"fm-icon-btn pinned ${index === 0 ? 'pinned' : ''}\" title=\"置顶\"><i class=\"fas fa-thumbtack\"></i></button>\n                        <button class=\"fm-icon-btn del\" title=\"移除\"><i class=\"fas fa-trash-alt\"></i></button>\n                    </div>\n                `;\n                \n                item.addEventListener('click', (e) => {\n                    if (e.target.closest('.del')) {\n                        e.stopPropagation(); removeTrack(index, currentListObj.id);\n                    } else if (e.target.closest('.pinned')) {\n                        e.stopPropagation(); pinTrack(index, currentListObj.id);\n                    } else if (e.target.closest('.move')) {\n                        e.stopPropagation(); showAddMenu(e, track, 'move', index, currentListObj.id);\n                    } else {\n                        playTrack(index, currentListObj.id);\n                    }\n                });\n                UI.playlistEl.appendChild(item);\n            });\n        }\n    }\n\n    function pinTrack(index, playlistId) {\n        const targetList = STATE.playlists.find(p => p.id === playlistId);\n        if (!targetList || index <= 0 || index >= targetList.tracks.length) return;\n        \n        const [track] = targetList.tracks.splice(index, 1);\n        targetList.tracks.unshift(track);\n        \n        if (STATE.playingPlaylistId === playlistId) {\n            if (STATE.currentIndex === index) STATE.currentIndex = 0;\n            else if (STATE.currentIndex >= 0 && STATE.currentIndex < index) STATE.currentIndex += 1;\n        }\n        savePlaylist();\n        renderListUI();\n    }\n\n    function removeTrack(index, playlistId) {\n        const targetList = STATE.playlists.find(p => p.id === playlistId);\n        if (!targetList) return;\n\n        targetList.tracks.splice(index, 1);\n        \n        if (STATE.playingPlaylistId === playlistId) {\n            if (index === STATE.currentIndex) {\n                audio.pause();\n                if (targetList.tracks.length > 0) playTrack(index % targetList.tracks.length, playlistId);\n                else {\n                    STATE.currentIndex = -1;\n                    UI.title.textContent = '播放器测试';\n                    UI.artist.textContent = 'Awaiting Connection...';\n                    UI.outLyrics.innerHTML = '';\n                }\n            } else if (index < STATE.currentIndex) {\n                STATE.currentIndex--;\n            }\n        }\n        savePlaylist();\n        renderListUI();\n    }\n\n    // 播放核心逻辑\n    async function playTrack(index, playlistId = STATE.playingPlaylistId, isRetry = false) {\n        const targetList = STATE.playlists.find(p => p.id === playlistId);\n        if (!targetList || index < 0 || index >= targetList.tracks.length) return;\n        \n        STATE.playingPlaylistId = playlistId;\n        STATE.currentIndex = index;\n        const requestId = ++STATE.playRequestId;\n        const track = targetList.tracks[index];\n\n        if (!isRetry) track.__retriedOnError = false;\n        \n        UI.title.textContent = track.title;\n        UI.artist.textContent = track.artist;\n        renderListUI();\n\n        audio.pause(); audio.src = '';\n        STATE.lyricsData = []; UI.outLyrics.innerHTML = ''; UI.outLyricsScrollList.innerHTML = ''; STATE.lastActiveLrcIndex = -1;\n        if (lrcRafId) cancelAnimationFrame(lrcRafId);\n        updateProgressUI(0, 0);\n\n        if (!track.url) {\n            UI.title.textContent = \"解析音源中...\";\n            let searchRes = await API.fillTrackInfo(track.title, track.artist);\n            if (!searchRes && track.rawId) searchRes = { id: track.rawId, source: track.source || 'netease' };\n            \n            if (searchRes) {\n                track.source = searchRes.source || track.source;\n                track.id = searchRes.id;\n                track.lyricId = searchRes.lyric_id || searchRes.id;\n                track.url = await API.getUrl(track.source, track.id);\n            }\n        }\n\n        if (STATE.playRequestId !== requestId || STATE.playingPlaylistId !== playlistId || STATE.currentIndex !== index) return;\n\n        if (track.url) {\n            UI.title.textContent = track.title;\n            audio.__playToken = requestId;\n            audio.src = withCacheBust(track.url);\n            audio.play().catch(e => console.warn(\"Auto-play prevented\", e));\n            \n            if (track.lrcUrl || track.lyricId || track.rawId) {\n                let lyricSource = track.source;\n                let lyricId = track.lyricId || track.rawId;\n                let lrcData = null;\n\n                if (track.lrcUrl) {\n                    lrcData = await API.getLyricByUrl(track.lrcUrl);\n                    if (STATE.playRequestId !== requestId || STATE.playingPlaylistId !== playlistId || STATE.currentIndex !== index) return;\n                }\n\n                if (!lrcData || lrcData.__error || !lrcData.lyric) {\n                    if (lyricId) {\n                        lrcData = await API.getLyric(lyricSource, lyricId);\n                        if (STATE.playRequestId !== requestId || STATE.playingPlaylistId !== playlistId || STATE.currentIndex !== index) return;\n                    }\n                }\n\n                if (!lrcData || lrcData.__error || !lrcData.lyric) {\n                    const searchRes = await API.fillTrackInfo(track.title, track.artist);\n                    if (STATE.playRequestId !== requestId || STATE.playingPlaylistId !== playlistId || STATE.currentIndex !== index) return;\n                    if (searchRes) {\n                        lyricSource = searchRes.source || lyricSource;\n                        lyricId = searchRes.lyric_id || searchRes.id;\n                        lrcData = await API.getLyric(lyricSource, lyricId);\n                        if (STATE.playRequestId !== requestId || STATE.playingPlaylistId !== playlistId || STATE.currentIndex !== index) return;\n                    }\n                }\n\n                if (lrcData && !lrcData.__error && lrcData.lyric) {\n                    if (lyricId) track.lyricId = lyricId;\n                    parseLyric(lrcData.lyric, lrcData.tlyric);\n                    buildScrollLyricsDom(); \n                    if (lrcRafId) cancelAnimationFrame(lrcRafId);\n                    if (STATE.isLyricsVisible && !audio.paused) updateLyrics();\n                }\n            }\n        } else {\n            UI.title.textContent = \"音源不可用，跳过\";\n            API.toast(`[${track.title}] 音源解析失败，已跳过`);\n            setTimeout(() => playNext(), 2000);\n        }\n    }\n\n    function playNext() {\n        const playingList = getPlayingPlaylist().tracks;\n        if (playingList.length === 0) return;\n        let nextIdx = STATE.currentIndex;\n        if (STATE.playMode === 'shuffle') nextIdx = Math.floor(Math.random() * playingList.length);\n        else nextIdx = (STATE.currentIndex + 1) % playingList.length;\n        playTrack(nextIdx, STATE.playingPlaylistId);\n    }\n\n    function playPrev() {\n        const playingList = getPlayingPlaylist().tracks;\n        if (playingList.length === 0) return;\n        let prevIdx = STATE.currentIndex;\n        if (STATE.playMode === 'shuffle') prevIdx = Math.floor(Math.random() * playingList.length);\n        else prevIdx = (STATE.currentIndex - 1 + playingList.length) % playingList.length;\n        playTrack(prevIdx, STATE.playingPlaylistId);\n    }\n\n    // 歌词解析\n    function parseLyric(lrcStr, tlrcStr) {\n        STATE.lyricsData = [];\n        const timeExp = /\\[(\\d{2,}):(\\d{2})(?:\\.(\\d{2,3}))?\\]/g;\n        const parse = (str) => {\n            const map = new Map();\n            if (!str) return map;\n            const lines = str.split('\\n');\n            for (let line of lines) {\n                line = line.trim();\n                if (!line) continue;\n\n                const timestamps = [...line.matchAll(timeExp)];\n                const txt = line.replace(timeExp, '').trim();\n                if (!txt || timestamps.length === 0) continue;\n\n                timestamps.forEach(result => {\n                    const min = parseInt(result[1], 10);\n                    const sec = parseInt(result[2], 10);\n                    const ms = result[3] ? parseInt(result[3].padEnd(3, '0'), 10) : 0;\n                    map.set((min * 60 + sec + ms / 1000).toFixed(3), txt);\n                });\n                timeExp.lastIndex = 0;\n            }\n            return map;\n        };\n\n        const lrcMap = parse(lrcStr);\n        const tlrcMap = parse(tlrcStr);\n        const times = Array.from(lrcMap.keys()).sort((a, b) => parseFloat(a) - parseFloat(b));\n        times.forEach(t => {\n            STATE.lyricsData.push({ time: parseFloat(t), text: lrcMap.get(t), trans: tlrcMap.get(t) || '' });\n        });\n    }\n\n    function buildScrollLyricsDom() {\n        UI.outLyricsScrollList.innerHTML = '';\n        STATE.lyricsData.forEach((line) => {\n            const div = targetDoc.createElement('div');\n            div.className = 'fm-lrc-scroll-line';\n            div.textContent = line.text;\n            UI.outLyricsScrollList.appendChild(div);\n        });\n        UI.outLyricsScrollList.style.transform = 'translateY(0px)';\n    }\n\n    function renderScrollActiveLine(activeIdx) {\n        const lineEls = UI.outLyricsScrollList.children;\n        if (lineEls.length === 0) return;\n        for (let i = 0; i < lineEls.length; i++) {\n            lineEls[i].classList.remove('current', 'near');\n            if (i === activeIdx) lineEls[i].classList.add('current');\n            else if (Math.abs(i - activeIdx) === 1) lineEls[i].classList.add('near');\n        }\n        const activeLine = lineEls[activeIdx];\n        if (!activeLine) return;\n        const containerHeight = UI.outLyricsScroll.clientHeight;\n        const targetCenter = activeLine.offsetTop + activeLine.offsetHeight / 2;\n        const offset = containerHeight / 2 - targetCenter;\n        UI.outLyricsScrollList.style.transform = `translateY(${offset}px)`;\n    }\n\n    // 修复：歌词动画优化，使用更平滑的延迟\n    function updateLyrics() {\n        if (!STATE.isLyricsVisible || STATE.lyricsData.length === 0 || audio.paused) return;\n        const ct = audio.currentTime;\n        const isFallMode = savedSettings.lrcMode === 'fall';\n        \n        // 随机掉落模式下，提前 0.8 秒触发下一句，实现交叠效果\n        const effectiveTime = ct + (isFallMode ? 0.8 : 0);\n        \n        let activeIdx = -1;\n        for (let i = STATE.lyricsData.length - 1; i >= 0; i--) {\n            if (effectiveTime >= STATE.lyricsData[i].time) { activeIdx = i; break; }\n        }\n\n        if (activeIdx !== -1 && activeIdx !== STATE.lastActiveLrcIndex) {\n            STATE.lastActiveLrcIndex = activeIdx;\n\n            if (savedSettings.lrcMode === 'scroll') {\n                renderScrollActiveLine(activeIdx);\n            } else if (savedSettings.lrcMode === 'plain') {\n                const line = STATE.lyricsData[activeIdx];\n                UI.outLyrics.replaceChildren();\n\n                const lineEl = targetDoc.createElement('div');\n                lineEl.className = 'fm-lrc-plain-line';\n                lineEl.textContent = line.text || '';\n                UI.outLyrics.appendChild(lineEl);\n\n                if (line.trans) {\n                    const transEl = targetDoc.createElement('div');\n                    transEl.className = 'fm-lrc-trans fm-lrc-plain-trans';\n                    transEl.textContent = line.trans;\n                    UI.outLyrics.appendChild(transEl);\n                }\n            } else {\n                const line = STATE.lyricsData[activeIdx];\n                \n                let duration = 4.0;\n                if (activeIdx < STATE.lyricsData.length - 1) {\n                    duration = STATE.lyricsData[activeIdx + 1].time - line.time;\n                }\n                \n                const chars = line.text.split('');\n                const validCharsCount = line.text.replace(/\\s/g, '').length || 1;\n                const isFallMode = savedSettings.lrcMode === 'fall';\n                \n                let html = `<div class=\"fm-lrc-line\">`;\n                \n                if (isFallMode) {\n                    // 随机掉落模式逻辑\n                    let validIndices = [];\n                    chars.forEach((c, i) => { if (c !== ' ') validIndices.push(i); });\n                    \n                    for (let i = validIndices.length - 1; i > 0; i--) {\n                        const j = Math.floor(Math.random() * (i + 1));\n                        [validIndices[i], validIndices[j]] = [validIndices[j], validIndices[i]];\n                    }\n                    // 保留随机掉落的随机性，但强制这一句的最后一个非空白字符最后掉落。\n                    if (validIndices.length > 1) {\n                        const lastIndex = validIndices.length - 1;\n                        const finalCharIndex = validIndices.findIndex(index => index === chars.length - 1);\n                        if (finalCharIndex !== -1) {\n                            [validIndices[finalCharIndex], validIndices[lastIndex]] = [validIndices[lastIndex], validIndices[finalCharIndex]];\n                        }\n                    }\n                    \n                    const delayOrderMap = new Map();\n                    validIndices.forEach((originalIndex, randomOrder) => {\n                        delayOrderMap.set(originalIndex, randomOrder);\n                    });\n\n                    // 严格限制时间：确保 (最大延迟 + 动画时长) < 句子总时长\n                    // 基础动画时长为 0.8s，预留 10% 的缓冲时间\n                    const animDuration = 0.8;\n                    const safeDuration = duration * 0.9;\n                    \n                    let maxTotalDelay;\n                    let speedScale = 1.0; // 用于在极短句子中加速动画本身\n\n                    if (safeDuration > animDuration + 0.5) {\n                        // 时间充裕，最大延迟限制在 1.5s 内\n                        maxTotalDelay = Math.min(safeDuration - animDuration, 1.5);\n                    } else {\n                        // 时间紧迫，压缩动画和延迟\n                        maxTotalDelay = safeDuration * 0.4;\n                        speedScale = (safeDuration * 0.6) / animDuration;\n                    }\n\n                    const delayStep = maxTotalDelay / Math.max(1, validCharsCount - 1);\n\n                    chars.forEach((c, i) => {\n                        if (c === ' ') { html += ' '; return; }\n                        \n                        const randomOrder = delayOrderMap.get(i);\n                        const delay = randomOrder * delayStep;\n                        const highlightClass = ['你', '我', '爱'].includes(c) ? ' lrc-highlight' : '';\n                        \n                        // 如果时间紧迫，通过内联样式覆盖 animation-duration 加速动画\n                        const animStyle = speedScale < 1.0 \n                            ? `animation-duration: ${animDuration * speedScale}s; animation-delay: ${delay}s;`\n                            : `animation-delay: ${delay}s;`;\n                            \n                        html += `<span class=\"lrc-anim-fall${highlightClass}\" style=\"${animStyle}\">${c}</span>`;\n                    });\n                } else {\n                    // 原有的逐句弹出模式逻辑\n                    const charDelay = Math.min(0.15, Math.max(0.04, (duration * 0.4) / validCharsCount));\n                    let charIndex = 0;\n                    chars.forEach((c) => {\n                        if (c === ' ') { html += ' '; return; }\n                        html += `<span class=\"lrc-anim-char\" style=\"animation-delay:${charIndex * charDelay}s\">${c}</span>`;\n                        charIndex++;\n                    });\n                }\n                \n                html += `</div>`;\n                \n                if (line.trans) {\n                    // 随机掉落模式下，翻译固定较短延迟，且使用专用的无位移渐现动画\n                    const transDelay = isFallMode ? 0.3 : Math.min(duration * 0.3, validCharsCount * 0.1 + 0.2);\n                    const animClass = isFallMode ? 'lrc-trans-fade' : 'lrc-anim-char';\n                    html += `<div class=\"fm-lrc-trans ${animClass}\" style=\"animation-delay:${transDelay}s\">${line.trans}</div>`;\n                }\n                \n                // 处理旧歌词的退场动画（原地雾化消散）\n                if (isFallMode) {\n                    const oldLines = Array.from(UI.outLyrics.children);\n                    oldLines.forEach(el => {\n                        if (!el.classList.contains('exiting')) {\n                            el.classList.add('exiting');\n                            // 锁定位置，脱离文档流，防止影响新歌词排版\n                            el.style.position = 'absolute';\n                            el.style.bottom = '0';\n                            el.style.left = '50%';\n                            el.style.transform = 'translateX(-50%)';\n                            el.style.width = 'max-content';\n                            el.style.pointerEvents = 'none';\n                            \n                            // 给整个旧行应用原地模糊消散动画，使其与新歌词的掉落自然交叠\n                            el.style.animation = 'lrc-fade-out 0.8s ease-out forwards';\n                            \n                            // 移除内部字符可能残留的动画，防止冲突\n                            const spans = el.querySelectorAll('span, div');\n                            spans.forEach(span => {\n                                span.style.animation = 'none';\n                            });\n                            \n                            setTimeout(() => { if (el.parentNode) el.remove(); }, 800);\n                        }\n                    });\n                    \n                    // 将新歌词包裹在一个容器中追加，而不是直接覆写 innerHTML\n                    const newWrapper = targetDoc.createElement('div');\n                    newWrapper.className = 'fm-lrc-line-wrapper';\n                    newWrapper.style.display = 'flex';\n                    newWrapper.style.flexDirection = 'column';\n                    newWrapper.style.alignItems = 'center';\n                    newWrapper.style.gap = '4px';\n                    newWrapper.innerHTML = html;\n                    UI.outLyrics.appendChild(newWrapper);\n                } else {\n                    UI.outLyrics.innerHTML = html;\n                }\n            }\n        }\n        // 歌词只需要在播放进度更新时检查当前行，不再用 requestAnimationFrame 每帧扫描。\n        // 这样可以避免歌词开启后占满主线程，尤其适合手机端。\n        lrcRafId = null;\n    }\n\n    // ================= 事件绑定 =================\n    \n    UI.closeBtn.onclick = togglePanel;\n    \n    UI.playBtn.onclick = () => {\n        const playingList = getPlayingPlaylist().tracks;\n        if (playingList.length === 0) return;\n        if (audio.paused) {\n            if (STATE.currentIndex === -1) playTrack(0, STATE.playingPlaylistId);\n            else audio.play();\n        } else audio.pause();\n    };\n\n    UI.prevBtn.onclick = playPrev;\n    UI.nextBtn.onclick = playNext;\n\n    UI.modeBtn.onclick = () => {\n        const modes = ['repeat_all', 'repeat_one', 'shuffle'];\n        const icons = ['fa-retweet', 'fa-redo-alt', 'fa-random'];\n        let idx = (modes.indexOf(STATE.playMode) + 1) % modes.length;\n        STATE.playMode = modes[idx];\n        UI.modeBtn.innerHTML = `<i class=\"fas ${icons[idx]}\"></i>`;\n    };\n\n    function getActiveLyricsEl() {\n        return savedSettings.lrcMode === 'scroll' ? UI.outLyricsScroll : UI.outLyrics;\n    }\n    function syncLyricsVisibility() {\n        const active = getActiveLyricsEl();\n        const inactive = (active === UI.outLyrics) ? UI.outLyricsScroll : UI.outLyrics;\n        inactive.classList.remove('show');\n        active.classList.toggle('show', STATE.isLyricsVisible);\n    }\n\n    UI.lrcToggleBtn.onclick = () => {\n        STATE.isLyricsVisible = !STATE.isLyricsVisible;\n        UI.lrcToggleBtn.classList.toggle('active-state', STATE.isLyricsVisible);\n        syncLyricsVisibility();\n        if (!STATE.isLyricsVisible) {\n            UI.outLyrics.innerHTML = '';\n            UI.outLyricsScrollList.innerHTML = '';\n        } else if (!audio.paused) {\n            STATE.lastActiveLrcIndex = -1;\n            updateLyrics();\n        }\n    };\n\n    UI.lrcSettingsBtn.onclick = () => {\n        UI.lrcSettingsPanel.classList.toggle('open');\n    };\n\n    UI.lrcModePlainBtn.onclick = () => {\n        if (savedSettings.lrcMode === 'plain') return;\n        savedSettings.lrcMode = 'plain';\n        updateLrcModeBtns();\n        STATE.lastActiveLrcIndex = -1;\n        if (lrcRafId) { cancelAnimationFrame(lrcRafId); lrcRafId = null; }\n        syncLyricsVisibility();\n        if (STATE.isLyricsVisible && !audio.paused) updateLyrics();\n        applySettings();\n    };\n\n    UI.lrcModePopupBtn.onclick = () => {\n        if (savedSettings.lrcMode === 'popup') return;\n        savedSettings.lrcMode = 'popup';\n        updateLrcModeBtns();\n        STATE.lastActiveLrcIndex = -1;\n        syncLyricsVisibility();\n        if (STATE.isLyricsVisible && !audio.paused) updateLyrics();\n        applySettings();\n    };\n    UI.lrcModeScrollBtn.onclick = () => {\n        if (savedSettings.lrcMode === 'scroll') return;\n        savedSettings.lrcMode = 'scroll';\n        updateLrcModeBtns();\n        STATE.lastActiveLrcIndex = -1;\n        syncLyricsVisibility();\n        if (STATE.lyricsData.length > 0) buildScrollLyricsDom();\n        if (STATE.isLyricsVisible && !audio.paused) updateLyrics();\n        applySettings();\n    };\n    UI.lrcModeFallBtn.onclick = () => {\n        if (savedSettings.lrcMode === 'fall') return;\n        savedSettings.lrcMode = 'fall';\n        updateLrcModeBtns();\n        STATE.lastActiveLrcIndex = -1;\n        syncLyricsVisibility();\n        if (STATE.isLyricsVisible && !audio.paused) updateLyrics();\n        applySettings();\n    };\n\n    UI.lrcFontSlider.oninput = (e) => {\n        savedSettings.lrcFont = e.target.value;\n        applySettings(false);\n        scheduleSettingsSave();\n        if (savedSettings.lrcMode === 'scroll' && STATE.lastActiveLrcIndex !== -1) renderScrollActiveLine(STATE.lastActiveLrcIndex);\n    };\n    UI.lrcBottomSlider.oninput = (e) => {\n        savedSettings.lrcBottom = e.target.value;\n        applySettings(false);\n        scheduleSettingsSave();\n    };\n\n    UI.sourceSelect.onchange = (e) => {\n        STATE.currentInputMode = e.target.value;\n        if (STATE.currentInputMode === 'search') {\n            UI.input.placeholder = \"输入歌曲名或歌手名\";\n            UI.addBtn.textContent = \"搜索\";\n        } else if (STATE.currentInputMode === 'search_local') {\n            UI.input.placeholder = \"在播放列表中查找\";\n            UI.addBtn.textContent = \"查找\";\n        } else {\n            UI.input.placeholder = \"输入歌单ID或链接\";\n            UI.addBtn.textContent = \"导入\";\n        }\n        STATE.localSearchKeyword = '';\n        renderListUI();\n    };\n\n    UI.addBtn.onclick = async () => {\n        const val = UI.input.value.trim();\n        if (!val && STATE.currentInputMode !== 'search_local') return;\n        \n        const originalText = UI.addBtn.textContent;\n        UI.addBtn.textContent = '...';\n        UI.addBtn.disabled = true;\n\n        if (STATE.currentInputMode === 'search_local') {\n            STATE.localSearchKeyword = val.toLowerCase();\n            renderListUI();\n            UI.addBtn.textContent = originalText;\n            UI.addBtn.disabled = false;\n            return;\n        }\n\n        if (STATE.currentInputMode === 'search') {\n            const results = await API.searchTrack(val);\n            if (results.length > 0) {\n                STATE.searchResults = results;\n                STATE.isShowingSearch = true;\n                renderListUI();\n                API.toast(`搜索到 ${results.length} 首相关歌曲`);\n            } else {\n                API.toast(\"未搜索到结果，请换个关键词\");\n            }\n        } else {\n            const tracks = await API.parsePlaylist(val, STATE.currentInputMode);\n            if (tracks.length > 0) {\n                const currentListObj = getCurrentPlaylist();\n                \n                // 防卡死：导入时检查容量\n                if (currentListObj.tracks.length >= CONFIG.MAX_TRACKS_PER_LIST) {\n                    API.toast(`歌单已达到上限 (${CONFIG.MAX_TRACKS_PER_LIST}首)，无法继续导入`);\n                    UI.addBtn.textContent = originalText;\n                    UI.addBtn.disabled = false;\n                    return;\n                }\n\n                const existingKeys = new Set(currentListObj.tracks.map(trackDedupeKey));\n                let newTracks = tracks.filter(t => !existingKeys.has(trackDedupeKey(t)));\n                const dupeCount = tracks.length - newTracks.length;\n                \n                // 截断超出的部分\n                let limitCount = 0;\n                if (currentListObj.tracks.length + newTracks.length > CONFIG.MAX_TRACKS_PER_LIST) {\n                    const allowed = CONFIG.MAX_TRACKS_PER_LIST - currentListObj.tracks.length;\n                    limitCount = newTracks.length - allowed;\n                    newTracks = newTracks.slice(0, allowed);\n                }\n\n                currentListObj.tracks.push(...newTracks);\n                savePlaylist();\n                STATE.isShowingSearch = false;\n                renderListUI();\n                UI.input.value = '';\n                \n                let msg = `成功导入 ${newTracks.length} 首歌曲至 [${currentListObj.name}]`;\n                if (dupeCount > 0) msg += `（跳过 ${dupeCount} 首重复）`;\n                if (limitCount > 0) msg += `（因容量限制，截断了 ${limitCount} 首）`;\n                API.toast(msg);\n                \n                if (STATE.currentIndex === -1 && STATE.playingPlaylistId === currentListObj.id) {\n                    playTrack(0, currentListObj.id);\n                }\n            } else {\n                API.toast(\"歌单解析失败或为空，请检查ID权限\");\n            }\n        }\n        \n        UI.addBtn.textContent = originalText;\n        UI.addBtn.disabled = false;\n    };\n\n    UI.input.onkeypress = (e) => {\n        if (e.key === 'Enter') UI.addBtn.click();\n    };\n    UI.input.oninput = () => {\n        if (STATE.currentInputMode === 'search_local') {\n            STATE.localSearchKeyword = UI.input.value.trim().toLowerCase();\n            renderListUI();\n        }\n    };\n\n    const THEME_DEFAULT_COLORS = {\n        adaptive: '', // 自适应主题不强制设色，跟随宿主环境\n        light: '#000000',\n        dark: '#ffffff',\n        glass: '#ffffff'\n    };\n\n    UI.themeDots.forEach(dot => {\n        dot.onclick = () => {\n            UI.themeDots.forEach(d => d.classList.remove('active'));\n            dot.classList.add('active');\n            STATE.currentTheme = dot.dataset.theme;\n            savedSettings.theme = STATE.currentTheme;\n            UI.wrapper.className = `theme-${STATE.currentTheme}`;\n            \n            // 切换主题时，恢复该主题的默认强调色\n            const defColor = THEME_DEFAULT_COLORS[STATE.currentTheme];\n            if (defColor) {\n                savedSettings.customColor = defColor;\n                UI.colorPicker.value = defColor;\n            }\n            applySettings();\n        };\n    });\n\n    UI.shapeBtn.onclick = () => {\n        savedSettings.shapeStyle = savedSettings.shapeStyle === 'square' ? 'round' : 'square';\n        applySettings();\n    };\n\n    let settingsSaveTimer = null;\n    const saveSettings = () => {\n        try {\n            localStorage.setItem(CONFIG.SETTINGS_KEY, JSON.stringify(savedSettings));\n        } catch (e) {\n            if (e.name === 'QuotaExceededError' || e.name === 'NS_ERROR_DOM_QUOTA_REACHED') {\n                API.toast(\"保存失败：图片体积过大，超出了浏览器本地存储限制。请清除壁纸或装修小图后重试。\");\n                savedSettings.nowCoverImage = '';\n                if (UI.nowCover) {\n                    UI.nowCover.replaceChildren();\n                    const icon = targetWin.document.createElement('i');\n                    icon.className = 'fas fa-compact-disc';\n                    UI.nowCover.appendChild(icon);\n                }\n                if (UI.decorationPreviewCover) {\n                    UI.decorationPreviewCover.replaceChildren();\n                    const icon = targetWin.document.createElement('i');\n                    icon.className = 'fas fa-compact-disc';\n                    UI.decorationPreviewCover.appendChild(icon);\n                }\n                savedSettings.bgImage = '';\n                UI.wrapper.style.setProperty('--fm-bg-image', 'none');\n            }\n        }\n    };\n    const scheduleSettingsSave = () => {\n        clearTimeout(settingsSaveTimer);\n        settingsSaveTimer = setTimeout(saveSettings, 250);\n    };\n\n    const applyDecoration = () => {\n        const label = String(savedSettings.nowPlayingLabel || '').trim() || 'NOW PLAYING';\n        if (UI.nowPlayingLabel) UI.nowPlayingLabel.textContent = label;\n\n        const renderCover = (container) => {\n            if (!container) return;\n            container.replaceChildren();\n            if (savedSettings.nowCoverImage) {\n                const img = targetWin.document.createElement('img');\n                img.src = savedSettings.nowCoverImage;\n                img.alt = '';\n                img.draggable = false;\n                container.appendChild(img);\n            } else {\n                const icon = targetWin.document.createElement('i');\n                icon.className = 'fas fa-compact-disc';\n                container.appendChild(icon);\n            }\n        };\n\n        renderCover(UI.nowCover);\n        renderCover(UI.decorationPreviewCover);\n    };\n\n    const readSmallImage = (file, maxSize = 256) => new Promise((resolve, reject) => {\n        if (!file || !file.type || !file.type.startsWith('image/')) {\n            reject(new Error('NOT_IMAGE'));\n            return;\n        }\n        if (file.size > 8 * 1024 * 1024) {\n            reject(new Error('TOO_LARGE'));\n            return;\n        }\n\n        const reader = new FileReader();\n        reader.onerror = () => reject(new Error('READ_FAILED'));\n        reader.onload = (event) => {\n            const img = new Image();\n            img.onload = () => {\n                const longest = Math.max(img.naturalWidth || 1, img.naturalHeight || 1);\n                const scale = Math.min(1, maxSize / longest);\n                const width = Math.max(1, Math.round((img.naturalWidth || 1) * scale));\n                const height = Math.max(1, Math.round((img.naturalHeight || 1) * scale));\n                const canvas = targetWin.document.createElement('canvas');\n                canvas.width = width;\n                canvas.height = height;\n                const ctx = canvas.getContext('2d');\n                if (!ctx) {\n                    reject(new Error('CANVAS_FAILED'));\n                    return;\n                }\n                ctx.drawImage(img, 0, 0, width, height);\n                const outputType = file.type === 'image/png' ? 'image/png' : 'image/jpeg';\n                try {\n                    resolve(canvas.toDataURL(outputType, outputType === 'image/jpeg' ? 0.82 : undefined));\n                } catch (err) {\n                    reject(err);\n                }\n            };\n            img.onerror = () => reject(new Error('IMAGE_FAILED'));\n            img.src = event.target.result;\n        };\n        reader.readAsDataURL(file);\n    });\n\n    const applySettings = (persist = true) => {\n\n        UI.wrapper.style.setProperty('--fm-ball-size', `${savedSettings.ballSize}px`);\n        UI.ballVisibleToggle.checked = savedSettings.showBall !== false;\n        UI.wrapper.classList.toggle('ball-hidden', savedSettings.showBall === false);\n        UI.wrapper.style.setProperty('--fm-custom-color', savedSettings.customColor);\n        \n        if (savedSettings.shapeStyle === 'square') {\n            UI.wrapper.style.setProperty('--fm-radius-ball', '8px');\n            UI.wrapper.style.setProperty('--fm-radius-panel', '0px');\n            UI.wrapper.style.setProperty('--fm-radius-btn', '4px');\n            UI.wrapper.style.setProperty('--fm-radius-input', '0px');\n            UI.wrapper.style.setProperty('--fm-radius-thumb', '2px');\n            UI.shapeBtn.innerHTML = '<i class=\"fas fa-circle\"></i>';\n            UI.shapeBtn.title = \"切换为圆润外观\";\n        } else {\n            UI.wrapper.style.setProperty('--fm-radius-ball', '50%');\n            UI.wrapper.style.setProperty('--fm-radius-panel', '24px');\n            UI.wrapper.style.setProperty('--fm-radius-btn', '50%');\n            UI.wrapper.style.setProperty('--fm-radius-input', '8px');\n            UI.wrapper.style.setProperty('--fm-radius-thumb', '50%');\n            UI.shapeBtn.innerHTML = '<i class=\"fas fa-square\"></i>';\n            UI.shapeBtn.title = \"切换为方正外观\";\n        }\n        \n        if (savedSettings.bgImage) {\n            UI.wrapper.style.setProperty('--fm-bg-image', `url(${savedSettings.bgImage})`);\n        } else {\n            UI.wrapper.style.setProperty('--fm-bg-image', 'none');\n        }\n        UI.wrapper.style.setProperty('--fm-bg-blur', `${savedSettings.bgBlur}px`);\n        UI.wrapper.style.setProperty('--fm-bg-brightness', `${savedSettings.bgBrightness}%`);\n        UI.wrapper.style.setProperty('--fm-lrc-font', `${savedSettings.lrcFont}px`);\n        UI.wrapper.style.setProperty('--fm-lrc-bottom', `${savedSettings.lrcBottom}px`);\n        const savedLrcFont = getSavedLrcFont();\n        if (savedLrcFont) {\n            ensureZeoFontLoaded(savedLrcFont).then((ok) => {\n                if (ok) applyLrcFont(savedLrcFont, false);\n            });\n        } else {\n            applyLrcFont(null, false);\n        }\n\n        // 修复：面板比例应用逻辑\n        if (savedSettings.panelRatio === '3:4') {\n            UI.ratioBtn.innerHTML = '<i class=\"fas fa-crop-alt\"></i> 3:4';\n        } else if (savedSettings.panelRatio === '9:16') {\n            UI.ratioBtn.innerHTML = '<i class=\"fas fa-crop-alt\"></i> 9:16';\n        } else {\n            UI.ratioBtn.innerHTML = '<i class=\"fas fa-crop-alt\"></i> 自适应';\n        }\n\n        // 智能强调色应用逻辑：\n        // 如果用户自定义的颜色与当前主题默认色不同，则应用覆盖；否则移除内联样式，让CSS接管。\n        const defColor = THEME_DEFAULT_COLORS[STATE.currentTheme];\n        if (STATE.currentTheme !== 'adaptive' && savedSettings.customColor && savedSettings.customColor !== defColor) {\n            UI.wrapper.style.setProperty('--fm-accent', savedSettings.customColor);\n        } else {\n            UI.wrapper.style.removeProperty('--fm-accent');\n        }\n        \n        applyDecoration();\n        if (persist) saveSettings();\n    };\n\n    UI.sizeSlider.value = savedSettings.ballSize;\n    UI.colorPicker.value = savedSettings.customColor;\n    UI.bgBlurSlider.value = savedSettings.bgBlur;\n    UI.bgBrightnessSlider.value = savedSettings.bgBrightness;\n    UI.lrcFontSlider.value = savedSettings.lrcFont;\n    UI.lrcBottomSlider.value = savedSettings.lrcBottom;\n    UI.decorationLabelInput.value = savedSettings.nowPlayingLabel || 'NOW PLAYING';\n    applySettings();\n\n    const updateLrcModeBtns = () => {\n        UI.lrcModePlainBtn.classList.toggle('active', savedSettings.lrcMode === 'plain');\n        UI.lrcModePopupBtn.classList.toggle('active', savedSettings.lrcMode === 'popup');\n        UI.lrcModeScrollBtn.classList.toggle('active', savedSettings.lrcMode === 'scroll');\n        UI.lrcModeFallBtn.classList.toggle('active', savedSettings.lrcMode === 'fall');\n    };\n    updateLrcModeBtns();\n    syncLyricsVisibility();\n\n    UI.sizeSlider.oninput = (e) => {\n        savedSettings.ballSize = e.target.value;\n        applySettings(false);\n        scheduleSettingsSave();\n    };\n\n    UI.ballVisibleToggle.onchange = (e) => {\n        savedSettings.showBall = !!e.target.checked;\n        applySettings();\n    };\n\n    UI.colorPicker.oninput = (e) => {\n        savedSettings.customColor = e.target.value;\n        applySettings(false);\n        scheduleSettingsSave();\n    };\n\n    UI.decorationUploadBtn.onclick = () => UI.decorationUploadInput.click();\n\n    UI.decorationUploadInput.onchange = async (e) => {\n        const file = e.target.files[0];\n        if (!file) return;\n        try {\n            savedSettings.nowCoverImage = await readSmallImage(file, 256);\n            applySettings();\n            API.toast('播放器装修小图已更新');\n        } catch (err) {\n            if (err && err.message === 'TOO_LARGE') {\n                API.toast('图片原文件太大，请选择 8MB 以内的图片。');\n            } else {\n                API.toast('图片读取失败，请换一张图片重试。');\n            }\n        } finally {\n            UI.decorationUploadInput.value = '';\n        }\n    };\n\n    UI.decorationClearBtn.onclick = () => {\n        savedSettings.nowCoverImage = '';\n        applySettings();\n        API.toast('已恢复默认唱片图标');\n    };\n\n    UI.decorationLabelInput.oninput = (e) => {\n        savedSettings.nowPlayingLabel = e.target.value.slice(0, 24);\n        applyDecoration();\n        scheduleSettingsSave();\n    };\n\n    UI.bgUploadBtn.onclick = () => UI.bgUploadInput.click();\n    \n    UI.bgUploadInput.onchange = (e) => {\n        const file = e.target.files[0];\n        if (!file) return;\n        \n        const reader = new FileReader();\n        reader.onload = (event) => {\n            const imgData = event.target.result;\n            const tempImg = new Image();\n            tempImg.onload = () => {\n                savedSettings.bgImage = imgData;\n                savedSettings.bgImageWidth = tempImg.naturalWidth;\n                savedSettings.bgImageHeight = tempImg.naturalHeight;\n                applySettings();\n                \n                if (STATE.isExpanded && savedSettings.panelRatio === 'default') {\n                    // 强制重新计算高度\n                    togglePanel();\n                    togglePanel();\n                }\n            };\n            tempImg.src = imgData;\n            UI.bgUploadInput.value = '';\n        };\n        reader.readAsDataURL(file);\n    };\n\n    UI.bgClearBtn.onclick = () => {\n        savedSettings.bgImage = '';\n        savedSettings.bgImageWidth = 0;\n        savedSettings.bgImageHeight = 0;\n        applySettings();\n        \n        if (STATE.isExpanded && savedSettings.panelRatio === 'default') {\n            togglePanel();\n            togglePanel();\n        }\n    };\n\n    UI.ratioBtn.onclick = () => {\n        const ratios = ['default', '3:4', '9:16'];\n        let idx = ratios.indexOf(savedSettings.panelRatio);\n        idx = (idx + 1) % ratios.length;\n        savedSettings.panelRatio = ratios[idx];\n        applySettings();\n        \n        if (STATE.isExpanded) {\n            // 强制重新计算高度和位置\n            togglePanel();\n            togglePanel();\n        }\n    };\n\n    UI.bgBlurSlider.oninput = (e) => {\n        savedSettings.bgBlur = e.target.value;\n        applySettings();\n    };\n\n    UI.bgBrightnessSlider.oninput = (e) => {\n        savedSettings.bgBrightness = e.target.value;\n        applySettings();\n    };\n\n    audio.onplay = () => {\n        STATE.isPlaying = true;\n        if (!runtimeSleeping) UI.playBtn.innerHTML = '<i class=\"fas fa-pause\"></i>';\n        if (!runtimeSleeping) UI.ball.classList.add('playing');\n        if (lrcRafId) cancelAnimationFrame(lrcRafId);\n        updateLyrics();\n    };\n    audio.onpause = () => {\n        STATE.isPlaying = false;\n        if (!runtimeSleeping) UI.playBtn.innerHTML = '<i class=\"fas fa-play\"></i>';\n        if (!runtimeSleeping) UI.ball.classList.remove('playing');\n        if (lrcRafId) cancelAnimationFrame(lrcRafId);\n    };\n    audio.onended = () => {\n        if (STATE.playMode === 'repeat_one') { audio.currentTime = 0; audio.play(); }\n        else playNext();\n    };\n    audio.ontimeupdate = () => {\n        if (!runtimeSleeping && !STATE.isSeekingProgress) updateProgressUI(audio.currentTime, audio.duration);\n        if (STATE.isLyricsVisible) updateLyrics();\n    };\n    audio.onloadedmetadata = () => { if (!runtimeSleeping && !STATE.isSeekingProgress) updateProgressUI(audio.currentTime, audio.duration); };\n    audio.onerror = () => {\n        const failedIndex = STATE.currentIndex;\n        const failedToken = audio.__playToken;\n        if (failedIndex < 0 || !audio.src || failedToken !== STATE.playRequestId) return;\n        const list = STATE.playlists.find(p => p.id === STATE.playingPlaylistId);\n        const track = list && list.tracks[failedIndex];\n        if (!track) return;\n\n        if (track.__retriedOnError) {\n            console.warn('[АрⅤ] 播放失败，重新解析后仍无法播放', track.title);\n            return;\n        }\n\n        track.__retriedOnError = true;\n        track.url = null; \n        console.warn('[АрⅤ] 播放失败，尝试重新解析音源后自动重试一次', track.title);\n        playTrack(failedIndex, STATE.playingPlaylistId, true);\n    };\n\n    const originalCloseHandler = UI.closeBtn?.onclick || null;\n    const originalPlayHandler = UI.playBtn?.onclick || null;\n    const originalPrevHandler = UI.prevBtn?.onclick || null;\n    const originalNextHandler = UI.nextBtn?.onclick || null;\n    const originalModeHandler = UI.modeBtn?.onclick || null;\n    const originalLrcToggleHandler = UI.lrcToggleBtn?.onclick || null;\n    const originalLrcSettingsHandler = UI.lrcSettingsBtn?.onclick || null;\n    const originalLrcPlainHandler = UI.lrcModePlainBtn?.onclick || null;\n    const originalLrcPopupHandler = UI.lrcModePopupBtn?.onclick || null;\n    const originalLrcScrollHandler = UI.lrcModeScrollBtn?.onclick || null;\n    const originalLrcFallHandler = UI.lrcModeFallBtn?.onclick || null;\n    const originalLrcFontSliderHandler = UI.lrcFontSlider?.oninput || null;\n    const originalLrcBottomHandler = UI.lrcBottomSlider?.oninput || null;\n    const originalSourceHandler = UI.sourceSelect?.onchange || null;\n    const originalAddButtonHandler = UI.addBtn?.onclick || null;\n    const originalInputHandler = UI.input?.oninput || null;\n    const originalShapeHandler = UI.shapeBtn?.onclick || null;\n    const originalSizeHandler = UI.sizeSlider?.oninput || null;\n    const originalBallVisibleHandler = UI.ballVisibleToggle?.onchange || null;\n    const originalColorHandler = UI.colorPicker?.oninput || null;\n    const originalDecorationUploadHandler = UI.decorationUploadInput?.onchange || null;\n    const originalDecorationClearHandler = UI.decorationClearBtn?.onclick || null;\n    const originalDecorationLabelHandler = UI.decorationLabelInput?.oninput || null;\n    const originalBgUploadHandler = UI.bgUploadInput?.onchange || null;\n    const originalBgClearHandler = UI.bgClearBtn?.onclick || null;\n    const originalRatioHandler = UI.ratioBtn?.onclick || null;\n    const originalBgBlurHandler = UI.bgBlurSlider?.oninput || null;\n    const originalBgBrightnessHandler = UI.bgBrightnessSlider?.oninput || null;\n\n    // ================= 运行时生命周期 =================\n    // 这个文件由轻量 Entry 在第一次打开播放器时动态加载。\n    // 因此这里不再安装酒馆菜单、不注册全局显隐事件、不自动打开播放器。\n    let runtimeSleeping = true;\n\n    function setPlayerRuntimeSleeping(sleeping) {\n        runtimeSleeping = !!sleeping;\n        STATE.runtimeSleeping = runtimeSleeping;\n        if (runtimeSleeping) {\n            // 只保留音频播放与桌面歌词运行；播放器 UI 完全停止刷新。\n            if (UI.panel) UI.panel.classList.remove('open');\n            if (UI.playBtn) UI.playBtn.onclick = null;\n            if (UI.prevBtn) UI.prevBtn.onclick = null;\n            if (UI.nextBtn) UI.nextBtn.onclick = null;\n            if (UI.modeBtn) UI.modeBtn.onclick = null;\n            if (UI.lrcToggleBtn) UI.lrcToggleBtn.onclick = null;\n            if (UI.lrcSettingsBtn) UI.lrcSettingsBtn.onclick = null;\n            if (UI.lrcModePlainBtn) UI.lrcModePlainBtn.onclick = null;\n            if (UI.lrcModePopupBtn) UI.lrcModePopupBtn.onclick = null;\n            if (UI.lrcModeScrollBtn) UI.lrcModeScrollBtn.onclick = null;\n            if (UI.lrcModeFallBtn) UI.lrcModeFallBtn.onclick = null;\n            if (UI.lrcFontSlider) UI.lrcFontSlider.oninput = null;\n            if (UI.lrcBottomSlider) UI.lrcBottomSlider.oninput = null;\n            if (UI.sourceSelect) UI.sourceSelect.onchange = null;\n            if (UI.addBtn) UI.addBtn.onclick = null;\n            if (UI.input) UI.input.oninput = null;\n            if (UI.shapeBtn) UI.shapeBtn.onclick = null;\n            if (UI.sizeSlider) UI.sizeSlider.oninput = null;\n            if (UI.ballVisibleToggle) UI.ballVisibleToggle.onchange = null;\n            if (UI.colorPicker) UI.colorPicker.oninput = null;\n            if (UI.decorationUploadBtn) UI.decorationUploadBtn.onclick = null;\n            if (UI.decorationUploadInput) UI.decorationUploadInput.onchange = null;\n            if (UI.decorationClearBtn) UI.decorationClearBtn.onclick = null;\n            if (UI.decorationLabelInput) UI.decorationLabelInput.oninput = null;\n            if (UI.bgUploadBtn) UI.bgUploadBtn.onclick = null;\n            if (UI.bgUploadInput) UI.bgUploadInput.onchange = null;\n            if (UI.bgClearBtn) UI.bgClearBtn.onclick = null;\n            if (UI.ratioBtn) UI.ratioBtn.onclick = null;\n            if (UI.bgBlurSlider) UI.bgBlurSlider.oninput = null;\n            if (UI.bgBrightnessSlider) UI.bgBrightnessSlider.oninput = null;\n            if (UI.closeBtn) UI.closeBtn.onclick = null;\n            if (UI.lrcFontImport) UI.lrcFontImport.onclick = null;\n            if (UI.lrcFontUrl) UI.lrcFontUrl.onkeydown = null;\n            if (UI.lrcFontReset) UI.lrcFontReset.onclick = null;\n            pageEls.forEach(p => p.style.pointerEvents = 'none');\n            navEls.forEach(b => b.onclick = null);\n            if (quickLibraryBtn) quickLibraryBtn.onclick = null;\n            // 桌面歌词仍由 audio 时间轴驱动，因此不要取消 lrcRaf。\n        } else {\n            pageEls.forEach(p => p.style.pointerEvents = '');\n            bindRuntimeUI();\n            applySettings();\n            renderListUI();\n            if (STATE.isPlaying) updateLyrics();\n        }\n    }\n\n    function bindRuntimeUI() {\n        if (UI.closeBtn) UI.closeBtn.onclick = originalCloseHandler || togglePanel;\n        if (UI.playBtn) UI.playBtn.onclick = originalPlayHandler;\n        if (UI.prevBtn) UI.prevBtn.onclick = originalPrevHandler;\n        if (UI.nextBtn) UI.nextBtn.onclick = originalNextHandler;\n        if (UI.modeBtn) UI.modeBtn.onclick = originalModeHandler;\n        if (UI.lrcToggleBtn) UI.lrcToggleBtn.onclick = originalLrcToggleHandler;\n        if (UI.lrcSettingsBtn) UI.lrcSettingsBtn.onclick = originalLrcSettingsHandler;\n        if (UI.lrcModePlainBtn) UI.lrcModePlainBtn.onclick = originalLrcPlainHandler;\n        if (UI.lrcModePopupBtn) UI.lrcModePopupBtn.onclick = originalLrcPopupHandler;\n        if (UI.lrcModeScrollBtn) UI.lrcModeScrollBtn.onclick = originalLrcScrollHandler;\n        if (UI.lrcModeFallBtn) UI.lrcModeFallBtn.onclick = originalLrcFallHandler;\n        if (UI.lrcFontSlider) UI.lrcFontSlider.oninput = originalLrcFontSliderHandler;\n        if (UI.lrcBottomSlider) UI.lrcBottomSlider.oninput = originalLrcBottomHandler;\n        if (UI.sourceSelect) UI.sourceSelect.onchange = originalSourceHandler;\n        if (UI.addBtn) UI.addBtn.onclick = originalAddButtonHandler;\n        if (UI.input) UI.input.oninput = originalInputHandler;\n        if (UI.shapeBtn) UI.shapeBtn.onclick = originalShapeHandler;\n        if (UI.sizeSlider) UI.sizeSlider.oninput = originalSizeHandler;\n        if (UI.ballVisibleToggle) UI.ballVisibleToggle.onchange = originalBallVisibleHandler;\n        if (UI.colorPicker) UI.colorPicker.oninput = originalColorHandler;\n        if (UI.decorationUploadBtn) UI.decorationUploadBtn.onclick = () => UI.decorationUploadInput?.click();\n        if (UI.decorationUploadInput) UI.decorationUploadInput.onchange = originalDecorationUploadHandler;\n        if (UI.decorationClearBtn) UI.decorationClearBtn.onclick = originalDecorationClearHandler;\n        if (UI.decorationLabelInput) UI.decorationLabelInput.oninput = originalDecorationLabelHandler;\n        if (UI.bgUploadBtn) UI.bgUploadBtn.onclick = () => UI.bgUploadInput?.click();\n        if (UI.bgUploadInput) UI.bgUploadInput.onchange = originalBgUploadHandler;\n        if (UI.bgClearBtn) UI.bgClearBtn.onclick = originalBgClearHandler;\n        if (UI.ratioBtn) UI.ratioBtn.onclick = originalRatioHandler;\n        if (UI.bgBlurSlider) UI.bgBlurSlider.oninput = originalBgBlurHandler;\n        if (UI.bgBrightnessSlider) UI.bgBrightnessSlider.oninput = originalBgBrightnessHandler;\n        if (UI.lrcFontImport) UI.lrcFontImport.onclick = guardedImportZeoSevenFont;\n        if (UI.lrcFontUrl) UI.lrcFontUrl.onkeydown = e => { if (e.key === 'Enter') guardedImportZeoSevenFont(); };\n        if (UI.lrcFontReset) UI.lrcFontReset.onclick = resetLrcFontToDefault;\n        navEls.forEach(btn => btn.onclick = () => switchPlayerPage(btn.dataset.pageTarget));\n        if (quickLibraryBtn) quickLibraryBtn.onclick = () => { switchPlayerPage('play'); UI.playlistSection?.scrollIntoView({behavior:'smooth',block:'start'}); };\n    }\n\n    // 第一次加载时当前播放器已经完成 DOM/状态构建，但保持休眠；Entry 随后调用 open。\n    STATE.isExpanded = false;\n    STATE.runtimeSleeping = true;\n    setPlayerRuntimeSleeping(true);\n    if (UI.panel) UI.panel.classList.remove('open');\n\n    targetWin.__APV_PLAYER_RUNTIME__ = {\n        open() { if (runtimeSleeping) setPlayerRuntimeSleeping(false); if (!STATE.isExpanded) togglePanel(); },\n        close() { if (STATE.isExpanded) togglePanel(); },\n        toggle() { if (STATE.isExpanded) togglePanel(); else { if (runtimeSleeping) setPlayerRuntimeSleeping(false); togglePanel(); } },\n        sleep() { setPlayerRuntimeSleeping(true); },\n        wake() { setPlayerRuntimeSleeping(false); },\n        isPlaying() { return !!STATE.isPlaying; },\n        destroy() { try { audio?.pause(); audio.src=''; } catch(_){}; try { targetDoc.getElementById(CONFIG.ID)?.remove(); }catch(_){}; delete targetWin.__APV_PLAYER_RUNTIME__; }\n    };\n\n    targetWin.addEventListener('pagehide', () => {\n        if (audio) { audio.pause(); audio.src = ''; audio = null; }\n        if (lrcRafId) cancelAnimationFrame(lrcRafId);\n        saveSettings();\n        clearTimeout(settingsSaveTimer);\n        const c = targetDoc.getElementById(CONFIG.ID);\n        if (c) c.remove();\n        delete targetWin.__APV_PLAYER_RUNTIME__;\n    }, { once: true });\n\n})();\n";
+    // ================= 核心配置 =================
+    const CONFIG = {
+        ID: 'st-flow-music-player-pro',
+        Z_INDEX: 2147483640,
+        SAFE_MARGIN: 20, // 增加安全边距，防止贴边太紧
+        DEFAULT_THEME: 'adaptive',
+        STORAGE_KEY: 'apv_terminal_playlist_data',
+        SETTINGS_KEY: 'apv_terminal_settings',
+        MAX_TRACKS_PER_LIST: 1000 // 防卡死：单列表最大歌曲数
+    };
+
+
+    // ================= TauriTavern / SillyTavern 轻量入口 =================
+    // TT 专门适配：宿主就绪前不初始化播放器；首次点击前不读取歌单、不创建 Audio、
+    // 不创建 Shadow DOM、不绑定播放器监听。TauriTavern 的扩展 ABI 要求可在 ready 后使用。
+    const isTauriTavern = !!targetWin.__TAURITAVERN__;
     let runtimePromise = null;
 
-    async function loadRuntime() {
-        if (targetWin.__APV_PLAYER_RUNTIME__) return targetWin.__APV_PLAYER_RUNTIME__;
-        if (!runtimePromise) {
-            runtimePromise = Promise.resolve().then(() => {
-                // 只有用户第一次打开播放器时才执行这段代码。
-                const execute = new Function(RUNTIME_SOURCE);
-                execute.call(targetWin);
-                const runtime = targetWin.__APV_PLAYER_RUNTIME__;
-                if (!runtime) throw new Error('播放器运行核心未正确初始化');
-                return runtime;
-            }).catch(err => {
-                runtimePromise = null;
-                console.error('[ApV播放器] 运行核心加载失败', err);
-                throw err;
+    async function ensurePlayerRuntime() {
+        if (runtimePromise) return runtimePromise;
+        runtimePromise = (async () => {
+            if (isTauriTavern) {
+                try {
+                    const ready = targetWin.__TAURITAVERN__?.ready || targetWin.__TAURITAVERN_MAIN_READY__;
+                    if (ready && typeof ready.then === 'function') await ready;
+                } catch (e) {
+                    console.warn('[ApV] TauriTavern ready 等待失败，继续使用兼容模式。', e);
+                }
+            }
+
+            // 以下代码就是最新版播放器原本的完整运行体；仅把启动时机后移。
+            const initializePlayerRuntime = async function () {
+    // 尝试读取本地存储的歌单
+    let savedPlaylists = [{ id: 'default', name: '默认列表', tracks: [] }];
+    try {
+        const saved = localStorage.getItem(CONFIG.STORAGE_KEY);
+        if (saved) {
+            const parsed = JSON.parse(saved);
+            if (Array.isArray(parsed)) {
+                if (parsed.length > 0 && parsed[0].tracks) {
+                    savedPlaylists = parsed;
+                } else {
+                    savedPlaylists[0].tracks = parsed;
+                }
+            }
+        }
+    } catch (e) { console.warn("读取本地歌单失败", e); }
+
+    // 容错：避免损坏的本地数据导致初始化阶段直接崩溃。
+    savedPlaylists = Array.isArray(savedPlaylists) ? savedPlaylists
+        .filter(p => p && typeof p === 'object')
+        .map((p, i) => ({
+            id: String(p.id || (i === 0 ? 'default' : `pl_${Date.now()}_${i}`)),
+            name: String(p.name || (i === 0 ? '默认列表' : `歌单 ${i + 1}`)),
+            description: String(p.description || ''),
+            cover: typeof p.cover === 'string' ? p.cover : '',
+            color: /^#[0-9a-fA-F]{6}$/.test(String(p.color || '')) ? String(p.color) : '',
+            tracks: Array.isArray(p.tracks) ? p.tracks.filter(Boolean) : []
+        })) : [];
+    if (!savedPlaylists.length || savedPlaylists[0].id !== 'default') {
+        savedPlaylists.unshift({ id: 'default', name: '默认列表', description: '', cover: '', color: '', tracks: [] });
+    }
+
+    // 防卡死：严格去重与容量限制
+    function trackDedupeKey(t) {
+        const idPart = t.rawId || t.lyricId || '';
+        return `${t.source || ''}::${idPart}::${(t.title || '').trim()}::${(t.artist || '').trim()}`.toLowerCase();
+    }
+
+    // API/本地数据可能包含 HTML 特殊字符；渲染前统一转义，避免破坏播放器 DOM。
+    function escapeHTML(value) {
+        return String(value ?? '')
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;')
+            .replace(/'/g, '&#39;');
+    }
+    
+    function dedupeAndLimitTracks(tracks) {
+        const seen = new Set();
+        const result = [];
+        for (const t of tracks) {
+            if (result.length >= CONFIG.MAX_TRACKS_PER_LIST) break; // 触发容量限制
+            const key = trackDedupeKey(t);
+            if (seen.has(key)) continue;
+            seen.add(key);
+            result.push(t);
+        }
+        return result;
+    }
+
+    // 启动阶段不再扫描/去重整份歌单数据。
+    // 大歌单的整理延迟到用户第一次打开播放器时执行，避免拖慢酒馆启动。
+    let startupDedupeCount = 0;
+    let startupLimitCount = 0;
+    let playlistsPrepared = false;
+    function preparePlaylistsForUI() {
+        if (playlistsPrepared) return;
+        playlistsPrepared = true;
+        savedPlaylists.forEach(list => {
+            const before = list.tracks.length;
+            list.tracks = dedupeAndLimitTracks(list.tracks);
+            const removed = before - list.tracks.length;
+            if (removed > 0) {
+                if (before > CONFIG.MAX_TRACKS_PER_LIST) {
+                    startupLimitCount += (before - CONFIG.MAX_TRACKS_PER_LIST);
+                    startupDedupeCount += Math.max(0, removed - (before - CONFIG.MAX_TRACKS_PER_LIST));
+                } else {
+                    startupDedupeCount += removed;
+                }
+            }
+        });
+        STATE.playlists = savedPlaylists;
+        if (startupDedupeCount > 0 || startupLimitCount > 0) {
+            try { localStorage.setItem(CONFIG.STORAGE_KEY, JSON.stringify(savedPlaylists)); } catch (e) {}
+        }
+    }
+
+    // 读取本地设置
+    let savedSettings = { 
+        ballSize: 50, customColor: '#4a90e2', bgImage: '', bgImageWidth: 0, bgImageHeight: 0, 
+        bgBlur: 10, bgBrightness: 70, lrcMode: 'popup', lrcFont: 16, lrcBottom: 80, lrcFontName: '默认字体', lrcFontFamily: '', lrcFontCss: '', lrcFontId: '', lrcFontUrl: '', 
+        panelRatio: 'default', shapeStyle: 'round', theme: 'adaptive',
+        nowCoverImage: '', nowPlayingLabel: 'NOW PLAYING', showBall: true
+    };
+    try {
+        const s = localStorage.getItem(CONFIG.SETTINGS_KEY);
+        if (s) savedSettings = { ...savedSettings, ...JSON.parse(s) };
+    } catch(e) {}
+    // 旧版本的字体设置仅作兼容清理，不再参与任何功能。
+    delete savedSettings.customFont;
+
+    // ================= 状态管理 =================
+    const STATE = {
+        isVisible: true,
+        isExpanded: false,
+        isPlaying: false,
+        currentTheme: savedSettings.theme || CONFIG.DEFAULT_THEME,
+        playMode: 'repeat_all',
+        playlists: savedPlaylists,
+        currentPlaylistId: savedPlaylists[0].id,
+        playingPlaylistId: savedPlaylists[0].id,
+        searchResults: [],
+        currentInputMode: 'netease',
+        isShowingSearch: false,
+        isPlaylistHome: true,
+        localSearchKeyword: '', 
+        currentIndex: -1,
+        lyricsData: [],
+        isLyricsVisible: true,
+        lastActiveLrcIndex: -1,
+        isSeekingProgress: false,
+        playRequestId: 0,
+        uiInitialized: false
+    };
+
+    const getCurrentPlaylist = () => STATE.playlists.find(p => p.id === STATE.currentPlaylistId) || STATE.playlists[0];
+    const getPlayingPlaylist = () => STATE.playlists.find(p => p.id === STATE.playingPlaylistId) || STATE.playlists[0];
+
+    let audio = new targetWin.Audio();
+    let lrcRafId = null;
+
+    const DEFAULT_PLAYLIST_COLORS = ['#4a90e2', '#9b59b6', '#e67e22', '#2ecc71', '#e74c3c', '#1abc9c'];
+    const getPlaylistColor = (playlist) => playlist?.color || savedSettings.customColor || '#4a90e2';
+    const renderPlaylistCover = (container, playlist, className = '') => {
+        if (!container) return;
+        container.replaceChildren();
+        if (playlist?.cover) {
+            const img = targetDoc.createElement('img');
+            img.src = playlist.cover;
+            img.alt = '';
+            img.draggable = false;
+            container.appendChild(img);
+        } else {
+            const icon = targetDoc.createElement('i');
+            icon.className = playlist?.id === 'default' ? 'fas fa-music' : 'fas fa-compact-disc';
+            container.appendChild(icon);
+        }
+        if (className) container.classList.add(className);
+    };
+
+    function editPlaylistName(playlist) {
+        const name = targetWin.prompt('请输入新的歌单名称：', playlist.name);
+        if (!name || !name.trim()) return;
+        playlist.name = name.trim().slice(0, 40);
+        savePlaylist();
+        renderListUI();
+        API.toast('歌单名称已更新');
+    }
+
+    function editPlaylistDescription(playlist) {
+        const desc = targetWin.prompt('请输入歌单简介（可留空）：', playlist.description || '');
+        if (desc === null) return;
+        playlist.description = desc.trim().slice(0, 160);
+        savePlaylist();
+        renderListUI();
+        API.toast('歌单简介已更新');
+    }
+
+    function editPlaylistColor(playlist) {
+        const input = targetDoc.createElement('input');
+        input.type = 'color';
+        input.value = getPlaylistColor(playlist);
+        input.style.position = 'fixed';
+        input.style.left = '-9999px';
+        input.style.top = '0';
+        input.style.opacity = '0';
+        targetDoc.body.appendChild(input);
+        input.onchange = () => {
+            playlist.color = input.value;
+            savePlaylist();
+            renderListUI();
+            API.toast('歌单颜色已更新');
+            input.remove();
+        };
+        input.onblur = () => setTimeout(() => input.remove(), 100);
+        input.click();
+    }
+
+    function editPlaylistCover(playlist) {
+        const input = targetDoc.createElement('input');
+        input.type = 'file';
+        input.accept = 'image/*';
+        input.style.display = 'none';
+        targetDoc.body.appendChild(input);
+        input.onchange = async () => {
+            const file = input.files?.[0];
+            if (!file) { input.remove(); return; }
+            try {
+                playlist.cover = await readSmallImage(file, 320);
+                savePlaylist();
+                renderListUI();
+                API.toast('歌单封面已更新');
+            } catch (err) {
+                API.toast(err?.message === 'TOO_LARGE' ? '图片原文件太大，请选择 8MB 以内的图片。' : '图片读取失败，请换一张图片重试。');
+            } finally {
+                input.remove();
+            }
+        };
+        input.click();
+    }
+
+    function clearPlaylistCover(playlist) {
+        playlist.cover = '';
+        savePlaylist();
+        renderListUI();
+        API.toast('已恢复默认歌单封面');
+    }
+
+    // ================= API 封装 =================
+    const API = {
+        toast(msg) {
+            if (typeof triggerSlash === 'function') {
+                const safeMsg = msg.replace(/(\\+)?([|{}])/g, (m, s, c) => (s || '') + (s || '') + '\\' + c);
+                triggerSlash(`/echo severity=info [播放器测试] ${safeMsg}`);
+            } else {
+                console.log(`[播放器测试] ${msg}`);
+            }
+        },
+        _extractArray(data) {
+            if (Array.isArray(data)) return data;
+            if (data && typeof data === 'object') {
+                if (Array.isArray(data.data)) return data.data;
+                if (Array.isArray(data.list)) return data.list;
+                if (data.data && Array.isArray(data.data.list)) return data.data.list;
+                if (data.url || data.title || data.name) return [data];
+            }
+            return [];
+        },
+        _mapTrack(t, source) {
+            const idFromUrl = (t.url || t.lrc || t.pic || '').match(/[?&]id=([^&]+)/);
+            const extractedId = idFromUrl ? decodeURIComponent(idFromUrl[1]) : '';
+            return {
+                title: t.name || t.title || t.songName || '未知歌曲',
+                artist: t.artist || t.author || t.singer || (Array.isArray(t.ar) ? t.ar.map(a=>a.name).join('/') : '未知歌手'),
+                rawId: t.id || t.songId || t.mid || extractedId || '',
+                lyricId: t.lyric_id || t.lyricId || t.id || t.songId || t.mid || extractedId || '',
+                lrcUrl: t.lrc || null, 
+                url: t.url || t.src || t.playUrl || null, 
+                pic: t.pic || t.cover || t.img || null,
+                source: source
+            };
+        },
+        async _fetchJson(rawUrl, isUsable = data => data != null) {
+            try {
+                const res = await fetch(rawUrl);
+                const data = await res.json();
+                if (isUsable(data)) return data;
+            } catch (e) {}
+            const res = await fetch(`https://corsproxy.io/?${encodeURIComponent(rawUrl)}`);
+            return await res.json();
+        },
+        async parsePlaylist(inputVal, source) {
+            try {
+                const idMatch = inputVal.match(/id=(\d+)/i) || inputVal.match(/\/(\d+)(?:\?|$)/);
+                const targetId = idMatch ? idMatch[1] : inputVal;
+                const rawUrl = `https://api.injahow.cn/meting/?server=${source}&type=playlist&id=${targetId}`;
+                const data = await this._fetchJson(rawUrl, data => this._extractArray(data).length > 0);
+                return this._extractArray(data).map(t => this._mapTrack(t, source));
+            } catch (e) {
+                return [];
+            }
+        },
+        async searchTrack(keyword) {
+            const safeKeyword = encodeURIComponent(keyword.trim());
+            const rawUrl = `https://music-api.gdstudio.xyz/api.php?types=search&source=netease&name=${safeKeyword}&count=15&pages=1`;
+            try {
+                const data = await this._fetchJson(rawUrl, data => Array.isArray(data) && data.length > 0);
+                return Array.isArray(data) ? data.map(t => ({
+                    title: t.name,
+                    artist: Array.isArray(t.artist) ? t.artist.join('/') : t.artist,
+                    id: t.id,
+                    lyricId: t.lyric_id || t.id,
+                    source: t.source || 'netease'
+                })) : [];
+            } catch (e) {
+                return [];
+            }
+        },
+        async fillTrackInfo(title, artist) {
+            const keyword = encodeURIComponent(`${title} ${artist}`.trim());
+            const rawUrl = `https://music-api.gdstudio.xyz/api.php?types=search&source=netease&name=${keyword}&count=1&pages=1`;
+            try {
+                const data = await this._fetchJson(rawUrl, data => Array.isArray(data) && data.length > 0);
+                return Array.isArray(data) && data.length > 0 ? data[0] : null;
+            } catch (e) {
+                return null;
+            }
+        },
+        async getUrl(source, id) {
+            const rawUrl = `https://music-api.gdstudio.xyz/api.php?types=url&source=${source}&id=${id}&br=320`;
+            try {
+                const data = await this._fetchJson(rawUrl, data => !!data?.url);
+                return data?.url || null;
+            } catch (e) {
+                return null;
+            }
+        },
+        async getLyric(source, id) {
+            const rawUrl = `https://music-api.gdstudio.xyz/api.php?types=lyric&source=${source}&id=${id}`;
+            try {
+                return await this._fetchJson(rawUrl, data => !!data?.lyric);
+            } catch (e) {
+                return { __error: e.message || String(e) };
+            }
+        },
+        async getLyricByUrl(url) {
+            try {
+                return await this._fetchJson(url, data => !!data?.lyric);
+            } catch (e) {
+                return { __error: e.message || String(e) };
+            }
+        }
+    };
+
+    // 防卡死：保存歌单时捕获异常
+    const savePlaylist = () => {
+        try {
+            localStorage.setItem(CONFIG.STORAGE_KEY, JSON.stringify(STATE.playlists, (key, value) => {
+                if (key === '__retriedOnError') return undefined;
+                return value;
+            }));
+        } catch (e) { 
+            console.warn("保存歌单失败", e); 
+            if (e.name === 'QuotaExceededError' || e.name === 'NS_ERROR_DOM_QUOTA_REACHED') {
+                API.toast("⚠️ 存储空间已满！请清理不必要的歌单或歌曲，以防脚本卡死。");
+            }
+        }
+    };
+
+    // ================= UI 构建 =================
+    const oldContainer = targetDoc.getElementById(CONFIG.ID);
+    if (oldContainer) oldContainer.remove();
+
+    const container = targetDoc.createElement('div');
+    container.id = CONFIG.ID;
+    if (isTauriTavern) container.setAttribute('data-tt-mobile-surface', 'FreeWindow');
+    container.style.cssText = `
+        position: fixed; top: 0; left: 0;
+        width: 0; height: 0;
+        overflow: visible; pointer-events: none; z-index: ${CONFIG.Z_INDEX};
+        contain: layout style; isolation: isolate;
+    `;
+    targetDoc.body.appendChild(container);
+
+    const shadow = container.attachShadow({ mode: 'open' });
+
+    const faLink = targetDoc.createElement('link');
+    faLink.rel = 'stylesheet';
+    faLink.href = 'https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css';
+    shadow.appendChild(faLink);
+
+    const style = targetDoc.createElement('style');
+    style.textContent = `
+        :host {
+            all: initial;
+            --fm-radius-ball: 50%;
+            --fm-radius-panel: 24px;
+            --fm-radius-btn: 50%;
+            --fm-radius-input: 8px;
+            --fm-radius-thumb: 50%;
+            --fm-transition: all 0.4s cubic-bezier(0.25, 0.8, 0.25, 1);
+            --fm-font: 'Segoe UI', -apple-system, BlinkMacSystemFont, Roboto, sans-serif;
+        }
+
+        .theme-adaptive { --fm-bg: var(--SmartThemeBlurTintColor, rgba(30, 30, 30, 0.85)); --fm-text-main: var(--SmartThemeBodyColor, #ffffff); --fm-text-sub: var(--SmartThemeEmColor, #aaaaaa); --fm-accent: var(--SmartThemeQuoteColor, #4a90e2); --fm-border: var(--SmartThemeBorderColor, rgba(255, 255, 255, 0.1)); --fm-shadow: var(--SmartThemeShadowColor, rgba(0, 0, 0, 0.3)); }
+        .theme-light { --fm-bg: rgba(255, 255, 255, 0.9); --fm-text-main: #1a1a1a; --fm-text-sub: #7a7a7a; --fm-accent: #000000; --fm-border: rgba(0, 0, 0, 0.08); --fm-shadow: rgba(0, 0, 0, 0.1); }
+        .theme-dark { --fm-bg: rgba(20, 20, 20, 0.9); --fm-text-main: #f0f0f0; --fm-text-sub: #888888; --fm-accent: #ffffff; --fm-border: rgba(255, 255, 255, 0.08); --fm-shadow: rgba(0, 0, 0, 0.4); }
+        .theme-glass { --fm-bg: rgba(255, 255, 255, 0.1); --fm-text-main: #ffffff; --fm-text-sub: rgba(255,255,255,0.7); --fm-accent: var(--fm-custom-color, #ffffff); --fm-border: rgba(255, 255, 255, 0.2); --fm-shadow: rgba(0, 0, 0, 0.2); }
+
+        * { box-sizing: border-box; font-family: var(--fm-font); margin: 0; padding: 0; }
+
+        .fm-ball {
+            position: absolute; width: var(--fm-ball-size, 50px); height: var(--fm-ball-size, 50px); 
+            border-radius: var(--fm-radius-ball);
+            background: var(--fm-bg); backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px);
+            border: 1px solid var(--fm-border); box-shadow: 0 4px 12px var(--fm-shadow);
+            display: flex; justify-content: center; align-items: center;
+            color: var(--fm-text-main); font-size: 20px; cursor: grab; pointer-events: auto;
+            transition: var(--fm-transition); touch-action: none; user-select: none; z-index: 10;
+        }
+        .fm-ball:active { cursor: grabbing; transform: scale(0.95); }
+        .fm-ball.playing { animation: breathe 3s ease-in-out infinite; }
+        @keyframes breathe {
+            0%, 100% { box-shadow: 0 0 8px var(--fm-shadow), 0 0 0 0 rgba(255,255,255,0); transform: scale(1); }
+            50% { box-shadow: 0 0 16px var(--fm-shadow), 0 0 0 6px var(--fm-border); transform: scale(1.02); }
+        }
+
+        .fm-panel {
+            position: absolute; 
+            width: clamp(300px, 90vw, 400px);
+            max-width: calc(100vw - 40px);
+            height: var(--fm-panel-height, 540px);
+            max-height: calc(100dvh - 40px);
+            background: var(--fm-bg); backdrop-filter: blur(20px); -webkit-backdrop-filter: blur(20px);
+            border: 1px solid var(--fm-border); 
+            border-radius: var(--fm-radius-panel);
+            box-shadow: 0 10px 30px var(--fm-shadow); display: flex; flex-direction: column;
+            opacity: 0; transform: scale(0.8) translateY(20px); pointer-events: none;
+            transition: var(--fm-transition); z-index: 5; overflow: hidden;
+        }
+        .fm-panel.open { opacity: 1; transform: scale(1) translateY(0); pointer-events: auto; }
+
+        .fm-header { display: flex; align-items: center; padding: 16px 20px; border-bottom: 1px solid var(--fm-border); cursor: move; }
+        .fm-cover-mock { width: 44px; height: 44px; border-radius: var(--fm-radius-btn); background: var(--fm-border); display: flex; justify-content: center; align-items: center; color: var(--fm-text-sub); font-size: 18px; margin-right: 12px; flex-shrink: 0; transition: var(--fm-transition); }
+        .fm-info { flex: 1; overflow: hidden; }
+        .fm-title { color: var(--fm-text-main); font-size: 15px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-bottom: 4px; }
+        .fm-artist { color: var(--fm-text-sub); font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+        .fm-close-btn { background: none; border: none; color: var(--fm-text-sub); font-size: 18px; cursor: pointer; padding: 4px; transition: color 0.2s; }
+        .fm-close-btn:hover { color: var(--fm-text-main); }
+
+        .fm-progress-wrap { padding: 14px 20px 0; }
+        .fm-progress-track { position: relative; height: 4px; border-radius: 2px; background: var(--fm-border); cursor: pointer; touch-action: none; padding: 8px 0; background-clip: content-box; box-sizing: content-box; }
+        .fm-progress-fill { position: absolute; left: 0; top: 8px; height: 4px; border-radius: 2px; background: var(--fm-accent); width: 0%; pointer-events: none; }
+        .fm-progress-thumb { position: absolute; top: 50%; left: 0%; width: 12px; height: 12px; border-radius: var(--fm-radius-thumb); background: var(--fm-text-main); box-shadow: 0 1px 4px rgba(0,0,0,0.3); transform: translate(-50%, -50%); pointer-events: none; transition: transform 0.15s, border-radius 0.4s; }
+        .fm-progress-track:active .fm-progress-thumb, .fm-progress-track.dragging .fm-progress-thumb { transform: translate(-50%, -50%) scale(1.25); }
+        .fm-time-row { display: flex; justify-content: space-between; font-size: 10px; color: var(--fm-text-sub); margin-top: 2px; }
+
+        .fm-controls { display: flex; justify-content: space-between; align-items: center; padding: 12px 24px; }
+        .fm-btn { background: none; border: none; color: var(--fm-text-main); font-size: 16px; cursor: pointer; transition: transform 0.2s, color 0.2s, border-radius 0.4s, background 0.2s; display: flex; justify-content: center; align-items: center; width: 32px; height: 32px; border-radius: var(--fm-radius-btn); }
+        .fm-btn:hover { background: var(--fm-border); transform: scale(1.1); }
+        .fm-btn:active { transform: scale(0.9); }
+        .fm-btn.play-pause { font-size: 20px; width: 40px; height: 40px; background: var(--fm-text-main); color: var(--fm-bg); }
+        .fm-btn.play-pause:hover { background: var(--fm-accent); color: #fff; }
+        .fm-btn.active-state { color: var(--fm-accent); }
+
+        .fm-list-section { display: flex; flex-direction: column; flex: 0 0 auto; min-height: 150px; border-top: 0; background: transparent; overflow: visible; }
+        
+        .fm-input-wrap { display: flex; padding: 4px 0; border-bottom: 0; gap: 6px; align-items: center; }
+        .fm-select { background: rgba(0,0,0,0.1); border: 1px solid var(--fm-border); border-radius: var(--fm-radius-input); color: var(--fm-text-main); font-size: 12px; padding: 6px 4px; outline: none; cursor: pointer; transition: var(--fm-transition); }
+        .fm-select option { background: #333; color: #fff; }
+        .fm-input { flex: 1; background: transparent; border: 1px solid var(--fm-border); border-radius: var(--fm-radius-input); padding: 6px 10px; color: var(--fm-text-main); font-size: 12px; outline: none; transition: border-color 0.2s, border-radius 0.4s; }
+        .fm-input:focus { border-color: var(--fm-accent); }
+        .fm-input::placeholder { color: var(--fm-text-sub); opacity: 0.6; }
+        .fm-add-btn { background: var(--fm-text-main); color: var(--fm-bg); border: none; border-radius: var(--fm-radius-input); padding: 6px 12px; cursor: pointer; font-weight: bold; font-size: 12px; transition: opacity 0.2s, border-radius 0.4s; }
+        .fm-add-btn:hover { opacity: 0.8; }
+        .fm-add-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+
+        .fm-playlist-tabs { display: flex; flex-direction: column; gap: 7px; padding: 4px 0; background: transparent; overflow-y: auto; overflow-x: hidden; scrollbar-width: none; }
+        .fm-playlist-tabs::-webkit-scrollbar { width: 0; height: 0; display: none; }
+        .fm-playlist-row { --playlist-color: var(--fm-accent); display: flex; align-items: center; gap: 10px; min-height: 58px; padding: 7px 8px; border: 1px solid transparent; border-left: 3px solid transparent; border-radius: var(--fm-radius-input); background: rgba(255,255,255,0.025); color: var(--fm-text-main); cursor: pointer; transition: var(--fm-transition); user-select: none; box-sizing: border-box; }
+        .fm-playlist-row:hover { background: rgba(255,255,255,0.07); border-color: var(--fm-border); border-left-color: var(--playlist-color); }
+        .fm-playlist-row-cover { width: 44px; height: 44px; flex: 0 0 44px; display: flex; align-items: center; justify-content: center; border-radius: 10px; background: color-mix(in srgb, var(--playlist-color) 18%, transparent); color: var(--playlist-color); overflow: hidden; font-size: 16px; }
+        .fm-playlist-row-cover img, .fm-playlist-hero-cover img { width: 100%; height: 100%; display: block; object-fit: cover; }
+        .fm-playlist-row-info { min-width: 0; flex: 1 1 auto; display: flex; flex-direction: column; gap: 3px; }
+        .fm-playlist-row-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; font-weight: 600; color: var(--fm-text-main); }
+        .fm-playlist-row-count { font-size: 9px; color: var(--fm-text-sub); }
+        .fm-playlist-row-manage, .fm-playlist-manage-btn { flex: 0 0 28px; width: 28px; height: 28px; display: flex; align-items: center; justify-content: center; border: 0; background: transparent; color: var(--fm-text-sub); border-radius: 8px; cursor: pointer; }
+        .fm-playlist-row-manage:hover, .fm-playlist-manage-btn:hover { color: var(--fm-text-main); background: rgba(255,255,255,0.08); }
+        .fm-playlist-add-row { display: flex; align-items: center; justify-content: center; gap: 7px; min-height: 40px; padding: 7px 10px; margin-top: 2px; border: 1px dashed var(--fm-border); border-radius: var(--fm-radius-input); background: transparent; color: var(--fm-text-sub); cursor: pointer; font-size: 11px; transition: var(--fm-transition); box-sizing: border-box; }
+        .fm-playlist-add-row:hover { color: var(--fm-accent); border-color: var(--fm-accent); background: rgba(0,210,255,0.05); }
+        .fm-playlist-detail-head { display: flex; align-items: center; gap: 8px; padding: 3px 0 5px; }
+        .fm-playlist-back { display: inline-flex; align-items: center; gap: 6px; padding: 5px 8px; border: 0; border-radius: 8px; background: transparent; color: var(--fm-text-sub); cursor: pointer; font-size: 11px; }
+        .fm-playlist-back:hover { color: var(--fm-text-main); background: rgba(255,255,255,0.06); }
+        .fm-playlist-detail-title { min-width: 0; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; font-weight: 700; color: var(--fm-text-main); }
+        .fm-playlist-hero { --playlist-color: var(--fm-accent); display: grid; grid-template-columns: 72px minmax(0,1fr) auto; align-items: center; gap: 12px; padding: 10px; margin: 0 0 7px; border-radius: 14px; border: 1px solid var(--fm-border); background: linear-gradient(135deg, color-mix(in srgb, var(--playlist-color) 16%, transparent), rgba(255,255,255,0.025)); overflow: hidden; }
+        .fm-playlist-hero-cover { width: 72px; height: 72px; border-radius: 12px; display: flex; align-items: center; justify-content: center; overflow: hidden; background: color-mix(in srgb, var(--playlist-color) 20%, transparent); color: var(--playlist-color); font-size: 25px; }
+        .fm-playlist-hero-info { min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+        .fm-playlist-hero-name { color: var(--fm-text-main); font-size: 15px; font-weight: 750; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+        .fm-playlist-hero-count { color: var(--playlist-color); font-size: 9px; font-weight: 700; }
+        .fm-playlist-hero-desc { color: var(--fm-text-sub); font-size: 10px; line-height: 1.45; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+        .fm-playlist-playall { display: inline-flex; align-items: center; gap: 6px; padding: 8px 10px; border: 0; border-radius: 10px; background: var(--playlist-color); color: #fff; cursor: pointer; font-size: 10px; font-weight: 700; white-space: nowrap; }
+        .fm-playlist-playall:hover { filter: brightness(1.08); transform: translateY(-1px); }
+        .fm-playlist-menu-item { display: flex; align-items: center; gap: 9px; }
+        .fm-playlist-menu-item i { width: 14px; text-align: center; opacity: .75; }
+
+        /* 修复下拉菜单越界问题：移至顶层并使用 fixed 绝对定位 */
+        .fm-pop-menu {
+            position: fixed; background: var(--fm-bg); border: 1px solid var(--fm-border);
+            border-radius: var(--fm-radius-input); box-shadow: 0 4px 15px var(--fm-shadow); padding: 4px 0;
+            z-index: 2147483647; min-width: 120px; max-height: 200px; overflow-y: auto; backdrop-filter: blur(10px);
+            opacity: 0; transform: translateY(10px); pointer-events: none; transition: opacity 0.2s, transform 0.2s, border-radius 0.4s;
+        }
+        .fm-pop-menu::-webkit-scrollbar { width: 4px; }
+        .fm-pop-menu::-webkit-scrollbar-thumb { background: var(--fm-border); border-radius: 2px; }
+        .fm-pop-menu.show { opacity: 1; transform: translateY(0); pointer-events: auto; }
+        .fm-pop-item { padding: 8px 16px; font-size: 12px; color: var(--fm-text-main); cursor: pointer; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; transition: background 0.2s; }
+        .fm-pop-item:hover { background: var(--fm-accent); color: #fff; }
+
+        .fm-playlist { flex: 0 0 auto; overflow: visible; padding: 4px 0; position: relative; scrollbar-width:none; -ms-overflow-style:none; }
+        .fm-playlist::-webkit-scrollbar { width:0; height:0; display:none; }
+        
+        .fm-item { display: flex; justify-content: space-between; align-items: center; padding: 8px 16px; cursor: pointer; transition: background 0.2s; }
+        .fm-item:hover { background: var(--fm-border); }
+        .fm-item.active { background: var(--fm-border); border-left: 3px solid var(--fm-accent); }
+        .fm-item-info { flex: 1; overflow: hidden; display: flex; flex-direction: column; gap: 2px; }
+        .fm-item-title { color: var(--fm-text-main); font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+        .fm-item-artist { color: var(--fm-text-sub); font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+        
+        .fm-item-actions { display: flex; align-items: center; gap: 4px; flex-shrink: 0; }
+        .fm-icon-btn { color: var(--fm-text-sub); background: none; border: none; cursor: pointer; padding: 4px; opacity: 0; transition: all 0.2s; font-size: 14px; }
+        .fm-item:hover .fm-icon-btn { opacity: 1; }
+        .fm-icon-btn:hover { color: var(--fm-accent); transform: scale(1.1); }
+        .fm-icon-btn.del:hover { color: #ff4d4f; }
+        .fm-icon-btn.pinned { color: var(--fm-accent); opacity: 1; }
+
+        .fm-search-header { padding: 4px 16px; font-size: 11px; color: var(--fm-accent); background: rgba(0,0,0,0.2); display: flex; justify-content: space-between; align-items: center; }
+        .fm-back-list, .fm-clear-list { cursor: pointer; text-decoration: underline; transition: opacity 0.2s; }
+        .fm-clear-list:hover { opacity: 0.7; color: #ff4d4f; }
+
+        .fm-theme-bar { display: flex; justify-content: space-around; padding: 10px; border-top: 1px solid var(--fm-border); }
+        .fm-theme-dot { width: 16px; height: 16px; border-radius: 50%; cursor: pointer; border: 2px solid transparent; transition: transform 0.2s; }
+        .fm-theme-dot:hover { transform: scale(1.2); }
+        .fm-theme-dot.active { border-color: var(--fm-text-main); transform: scale(1.1); }
+        .dot-adaptive { background: linear-gradient(45deg, #4a90e2, #50e3c2); }
+        .dot-light { background: #f0f0f0; border-color: #ccc; }
+        .dot-dark { background: #222; }
+        .dot-glass { background: rgba(255,255,255,0.3); border-color: rgba(255,255,255,0.8); backdrop-filter: blur(4px); }
+
+        /* 优化歌词动画：延长持续时间，调整缓动函数，使其更柔和 */
+        
+        .fm-panel-bg {
+            position: absolute; top: -10%; left: -10%; width: 120%; height: 120%; z-index: -1;
+            background-size: cover; background-position: center; background-repeat: no-repeat;
+            pointer-events: none; transition: filter 0.3s;
+            background-image: var(--fm-bg-image, none);
+            filter: blur(var(--fm-bg-blur, 0px)) brightness(var(--fm-bg-brightness, 100%));
+        }
+
+        .fm-bg-btn { background: var(--fm-border); color: var(--fm-text-main); border: none; border-radius: var(--fm-radius-input); padding: 4px 8px; font-size: 11px; cursor: pointer; transition: var(--fm-transition); display: flex; align-items: center; gap: 4px; white-space: nowrap; }
+        .fm-bg-btn:hover { background: var(--fm-accent); color: #fff; }
+        .fm-bg-sliders { display: flex; flex: 1; align-items: center; gap: 10px; min-width: 120px; }
+        .fm-bg-slider-wrap { display: flex; align-items: center; gap: 4px; flex: 1; font-size: 10px; color: var(--fm-text-sub); }
+        .fm-bg-slider { flex: 1; height: 4px; -webkit-appearance: none; background: var(--fm-border); border-radius: 2px; outline: none; }
+        .fm-bg-slider::-webkit-slider-thumb { -webkit-appearance: none; width: 10px; height: 10px; border-radius: var(--fm-radius-thumb); background: var(--fm-text-main); cursor: pointer; transition: var(--fm-transition); }
+        
+        .fm-panel-bg {
+            position: absolute; top: -10%; left: -10%; width: 120%; height: 120%; z-index: -1;
+            background-size: cover; background-position: center; background-repeat: no-repeat;
+            pointer-events: none; transition: filter 0.3s;
+            background-image: var(--fm-bg-image, none);
+            filter: blur(var(--fm-bg-blur, 0px)) brightness(var(--fm-bg-brightness, 100%));
+        }
+
+        /* 桌面歌词字体下拉选择器：使用原生 select，避免 WebView 弹层透明/遮挡问题 */
+        .fm-lrc-font-row { display:flex; align-items:flex-start; gap:10px; }
+        .fm-lrc-font-picker { flex:1; min-width:0; display:flex; flex-direction:column; gap:7px; }
+        .fm-lrc-font-current { width:100%; min-width:0; height:32px; box-sizing:border-box; border:1px solid var(--fm-border); background:var(--fm-panel); color:var(--fm-text-main); border-radius:var(--fm-radius-input); padding:6px 10px; font-size:12px; outline:none; }
+        .fm-lrc-font-url-row { display:flex; gap:6px; width:100%; }
+        .fm-lrc-font-url { flex:1; min-width:0; height:32px; box-sizing:border-box; border:1px solid var(--fm-border); background:var(--fm-panel); color:var(--fm-text-main); border-radius:var(--fm-radius-input); padding:6px 10px; font-size:11px; outline:none; }
+        .fm-lrc-font-url::placeholder { color:var(--fm-text-sub); opacity:.8; }
+        .fm-lrc-font-url:focus { border-color:var(--fm-accent); }
+        .fm-lrc-font-import { flex:0 0 auto; height:32px; border:0; border-radius:var(--fm-radius-input); padding:0 11px; background:var(--fm-accent); color:#fff; font-size:11px; cursor:pointer; }
+        .fm-lrc-font-import:disabled { opacity:.55; cursor:wait; }
+        .fm-lrc-font-reset { width:100%; height:32px; margin-top:7px; border:0; border-radius:9px; background:rgba(0,0,0,.045); color:var(--fm-text-sub); cursor:pointer; font-size:10px; transition:background .18s ease,color .18s ease; }
+        .fm-lrc-font-reset:hover { background:rgba(0,0,0,.08); color:var(--fm-text-main); }
+        .fm-lrc-font-reset:disabled { opacity:.55; cursor:default; }
+        .fm-lrc-font-hint { font-size:9px; color:var(--fm-text-sub); line-height:1.45; }
+
+        /* 强制把自定义字体应用到桌面歌词本体。播放器其它文字完全不受影响。
+           注意：播放器基础样式对所有元素设置了默认字体，所以这里必须使用 !important。 */
+        .fm-out-lyrics, .fm-out-lyrics *,
+        .fm-out-lyrics-scroll, .fm-out-lyrics-scroll * {
+            font-family: var(--fm-lrc-family, var(--fm-font)) !important;
+        }
+
+        .fm-out-lyrics {
+            position: absolute;
+            bottom: calc(var(--fm-lrc-bottom, 80px) + env(safe-area-inset-bottom, 0px));
+            max-height: 40dvh; overflow: hidden; left: 50%; transform: translateX(-50%);
+            width: max-content; max-width: 80vw; min-width: 60px; min-height: 24px;
+            text-align: center; pointer-events: none; z-index: 2147483647;
+            display: flex; flex-direction: column; align-items: center; gap: 4px;
+            opacity: 0; transition: opacity 0.5s, bottom 0.2s;
+        }
+        .fm-out-lyrics.show { opacity: 1; }
+        .fm-lrc-line { font-size: var(--fm-lrc-font, 16px); font-weight: bold; color: var(--fm-accent); text-shadow: 0 2px 8px var(--fm-shadow), 0 0 2px rgba(0,0,0,0.5); line-height: 1.4; }
+        .fm-lrc-plain-line { font-size: var(--fm-lrc-font, 16px); font-weight: bold; color: var(--fm-accent); line-height: 1.4; text-shadow: 0 2px 8px var(--fm-shadow), 0 0 2px rgba(0,0,0,0.5); }
+        .fm-lrc-plain-trans { margin-top: 4px; }
+        .fm-lrc-trans { font-size: calc(var(--fm-lrc-font, 16px) * 0.75); color: var(--fm-text-sub); text-shadow: 0 1px 4px var(--fm-shadow); }
+        
+        /* 优化动画效果：减小位移，延长持续时间，增强“浮现”感而非“弹跳”感 */
+        .lrc-anim-char { 
+            display: inline-block; opacity: 0; transform: translateY(4px); 
+            animation: lrc-in 1.0s cubic-bezier(0.22, 1, 0.36, 1) forwards; 
+        }
+        @keyframes lrc-in { to { opacity: 1; transform: translateY(0); } }
+
+        /* 新增：随机掉落动画与标红样式 */
+        .lrc-anim-fall {
+            display: inline-block; opacity: 0; transform: translateY(-40px);
+            /* 缩短基础动画时间，使其更干脆，避免拖沓 */
+            animation: lrc-fall-in 0.8s cubic-bezier(0.22, 1, 0.36, 1) forwards;
+        }
+        @keyframes lrc-fall-in { 
+            0% { opacity: 0; transform: translateY(-40px); filter: blur(4px); }
+            100% { opacity: 1; transform: translateY(0); filter: blur(0); } 
+        }
+        /* 翻译专用渐现动画：无位移，仅透明度和模糊变化 */
+        .lrc-trans-fade {
+            opacity: 0;
+            animation: lrc-trans-fade-in 0.8s cubic-bezier(0.22, 1, 0.36, 1) forwards;
+        }
+        @keyframes lrc-trans-fade-in {
+            0% { opacity: 0; filter: blur(4px); }
+            100% { opacity: 1; filter: blur(0); }
+        }
+        /* 优化退场动画：原地模糊消散，更自然柔和 */
+        @keyframes lrc-fade-out {
+            0% { opacity: 1; transform: scale(1); filter: blur(0); }
+            100% { opacity: 0; transform: scale(0.95); filter: blur(8px); }
+        }
+        .lrc-highlight {
+            color: #ff4d4f !important;
+            text-shadow: 0 0 8px rgba(255, 77, 79, 0.6), 0 2px 4px rgba(0,0,0,0.5) !important;
+        }
+
+        .fm-out-lyrics-scroll {
+            position: absolute;
+            bottom: calc(var(--fm-lrc-bottom, 80px) + env(safe-area-inset-bottom, 0px));
+            max-height: 40dvh; overflow: hidden; left: 50%; transform: translateX(-50%);
+            width: max-content; max-width: 80vw; min-width: 60px;
+            height: calc(var(--fm-lrc-font, 16px) * 5.4);
+            overflow: hidden; pointer-events: none; z-index: 2147483647;
+            opacity: 0; transition: opacity 0.5s, bottom 0.2s;
+            -webkit-mask-image: linear-gradient(to bottom, transparent 0%, black 30%, black 70%, transparent 100%);
+            mask-image: linear-gradient(to bottom, transparent 0%, black 30%, black 70%, transparent 100%);
+        }
+        .fm-out-lyrics-scroll.show { opacity: 1; }
+        .fm-lrc-scroll-list { display: flex; flex-direction: column; align-items: center; transition: transform 0.45s cubic-bezier(0.25,0.8,0.25,1); }
+        .fm-lrc-scroll-line {
+            font-size: var(--fm-lrc-font, 16px); line-height: 1.8; color: var(--fm-text-sub); opacity: 0.35;
+            text-align: center; text-shadow: 0 2px 8px var(--fm-shadow); white-space: nowrap; padding: 2px 10px;
+            transition: opacity 0.4s, color 0.4s, font-size 0.4s;
+        }
+        .fm-lrc-scroll-line.near { opacity: 0.6; }
+        .fm-lrc-scroll-line.current { color: var(--fm-accent); font-weight: bold; opacity: 1; font-size: calc(var(--fm-lrc-font, 16px) * 1.15); }
+
+        .fm-lrc-settings-panel { display: none; flex-direction: column; gap: 10px; padding: 8px 0 4px; border-top: 0; }
+        .fm-lrc-settings-panel.open { display: flex; }
+        .fm-lrc-settings-row { display: flex; align-items: center; gap: 10px; }
+        .fm-lrc-settings-label { font-size: 11px; color: var(--fm-text-sub); width: 56px; flex-shrink: 0; }
+        .fm-lrc-mode-switch { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 6px; flex: 1; }
+        .fm-lrc-mode-btn { padding: 6px 0; font-size: 11px; text-align: center; border-radius: var(--fm-radius-input); border: 1px solid var(--fm-border); background: none; color: var(--fm-text-sub); cursor: pointer; transition: var(--fm-transition); }
+        .fm-lrc-mode-btn.active { color: var(--fm-accent); border-color: var(--fm-accent); }
+        .fm-lrc-settings-row input[type=range] { flex: 1; accent-color: var(--fm-accent); }
+        .force-hide { display: none !important; }
+        .ball-hidden .fm-ball { display: none !important; }
+
+        .fm-page-play .fm-play-lyrics-settings { margin-top:2px; }
+        .fm-page-play .fm-play-lyrics-settings .fm-lrc-settings-panel.open, .fm-page-more .fm-play-lyrics-settings .fm-lrc-settings-panel.open { display:flex; padding:8px 0 4px; border-top:0; }
+        .fm-page-play .fm-quick-card { min-height:52px; box-sizing:border-box; }
+        .fm-bottom-nav { grid-template-columns:repeat(2,1fr); }
+
+        .fm-app-head { display:flex; align-items:center; justify-content:space-between; padding:14px 16px 10px; flex:0 0 auto; }
+        .fm-brand { display:flex; align-items:center; min-width:0; }
+        .fm-app-name { font-size:15px; font-weight:700; color:var(--fm-text-main); }
+        .fm-app-sub { margin-top:2px; font-size:9px; letter-spacing:.16em; color:var(--fm-text-sub); }
+        .fm-pages { flex:1 1 auto; min-height:0; overflow:hidden; position:relative; }
+        .fm-page { display:none; height:100%; min-height:0; overflow-y:auto; overflow-x:hidden; padding:8px 16px 18px; box-sizing:border-box; scrollbar-width:none; -ms-overflow-style:none; }
+        .fm-page::-webkit-scrollbar { width:0; height:0; display:none; }
+        .fm-page.active { display:flex; flex-direction:column; gap:12px; }
+        .fm-page.active > * { flex-shrink: 0; }
+        .fm-section-kicker { font-size:9px; letter-spacing:.18em; color:var(--fm-accent); font-weight:800; margin-bottom:3px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+        .fm-page-title { display:flex; align-items:center; justify-content:space-between; padding:4px 2px 2px; }
+        .fm-page-title h2 { margin:0; font-size:24px; line-height:1.1; color:var(--fm-text-main); }
+        .fm-now-playing { display:flex; align-items:center; gap:14px; padding:14px; border:1px solid var(--fm-border); border-radius:18px; background:rgba(255,255,255,.06); }
+        .fm-now-cover { width:82px; height:82px; flex:0 0 82px; border-radius:16px; display:flex; align-items:center; justify-content:center; background:var(--fm-border); color:var(--fm-text-sub); font-size:34px; overflow:hidden; }
+        .fm-now-cover img { width:100%; height:100%; display:block; object-fit:cover; object-position:center; }
+        .fm-decoration-preview { margin:4px 0 8px; display:flex; align-items:center; gap:10px; }
+        .fm-decoration-preview .fm-now-cover { width:54px; height:54px; flex-basis:54px; font-size:23px; }
+        .fm-decoration-preview-text { min-width:0; font-size:10px; line-height:1.45; color:var(--fm-text-sub); }
+        .fm-decoration-preview-text strong { display:block; color:var(--fm-text-main); font-size:11px; margin-bottom:2px; }
+        .fm-decoration-input { flex:1; min-width:0; height:34px; box-sizing:border-box; }
+        .fm-now-meta { min-width:0; }
+        .fm-now-meta .fm-title { font-size:18px; margin-bottom:5px; }
+        .fm-now-meta .fm-artist { font-size:12px; }
+        .fm-quick-card, .fm-status-card, .fm-setting-card, .fm-info-card, .fm-settings-section { border:0; border-radius:0; background:transparent; }
+        .fm-quick-card { display:flex; align-items:center; justify-content:space-between; padding:8px 0; }
+        .fm-quick-title, .fm-card-title, .fm-status-title { font-size:13px; font-weight:700; color:var(--fm-text-main); }
+        .fm-quick-sub, .fm-card-sub, .fm-status-sub { margin-top:3px; font-size:10px; line-height:1.45; color:var(--fm-text-sub); }
+        .fm-card-arrow, .fm-outline-btn { border:0; background:transparent; color:var(--fm-text-main); border-radius:10px; cursor:pointer; }
+        .fm-card-arrow { width:32px; height:32px; }
+        .fm-setting-card { overflow:visible; }
+        .fm-setting-card-head { display:flex; align-items:center; justify-content:space-between; padding:8px 0 4px; }
+        .fm-inline-icon-btn { width:30px; height:30px; }
+        .fm-count-badge { padding:3px 0; font-size:9px; color:var(--fm-text-sub); }
+        .fm-library-input { padding:0; border:0; gap:6px; }
+        .fm-library-input .fm-select { min-width:72px; }
+        .fm-library-input .fm-input { min-width:0; height:38px; box-sizing:border-box; }
+        .fm-library-input .fm-add-btn { height:38px; }
+        .fm-page-playlist { flex:0 0 auto; min-height:0; display:flex; flex-direction:column; gap:10px; }
+        .fm-page-playlist .fm-list-section { min-height:150px; flex:0 0 auto; border:0; border-radius:0; overflow:visible; background:transparent; }
+        .fm-page-playlist .fm-playlist-tabs { flex:0 0 auto; width:100%; min-width:0; box-sizing:border-box; }
+        .fm-page-playlist .fm-playlist { min-height:0; overflow:visible; }
+        .fm-settings-section { padding:8px 0; }
+        .fm-settings-section-title { font-size:12px; font-weight:800; color:var(--fm-text-main); margin-bottom:12px; }
+        .fm-theme-row { display:flex; gap:10px; margin-bottom:14px; }
+        .fm-theme-row .fm-theme-dot { width:28px; height:28px; }
+        .fm-more-row { display:flex; align-items:center; gap:12px; min-height:38px; border-top:0; font-size:11px; color:var(--fm-text-sub); }
+        .fm-more-row + .fm-more-row { margin-top:4px; }
+        .fm-more-row > span { width:72px; flex:0 0 72px; }
+        .fm-more-row input[type=range] { flex:1; min-width:0; accent-color:var(--fm-accent); }
+        .fm-appearance-pair { display:grid; grid-template-columns:1fr 1fr; gap:14px; align-items:center; }
+        .fm-appearance-pair .fm-more-row { min-width:0; }
+        .fm-appearance-pair .fm-more-row > span { width:auto; flex:1; }
+        .fm-color-picker { width:38px; height:26px; padding:0; border:0; background:transparent; }
+        .fm-wide-btn { width:100%; height:36px; margin-top:8px; border:0; border-radius:10px; background:rgba(0,0,0,.05); color:var(--fm-text-main); display:flex; align-items:center; justify-content:center; gap:8px; cursor:pointer; font-size:11px; }
+        .fm-bg-action-row { display:flex; gap:7px; margin-bottom:4px; }
+        .fm-bg-btn { flex:1; height:34px; border:0; border-radius:10px; background:rgba(0,0,0,.05); color:var(--fm-text-main); cursor:pointer; font-size:10px; }
+        .fm-range-with-icon { display:flex; align-items:center; gap:8px; flex:1; }
+        .fm-range-with-icon i { width:12px; color:var(--fm-text-sub); font-size:10px; }
+        .fm-switch { position:relative; width:42px; height:24px; flex:0 0 auto; display:inline-block; }
+        .fm-switch input { opacity:0; width:0; height:0; position:absolute; }
+        .fm-switch-slider { position:absolute; inset:0; cursor:pointer; border-radius:999px; background:rgba(0,0,0,.12); transition:.2s ease; }
+        .fm-switch-slider::before { content:""; position:absolute; width:18px; height:18px; left:3px; top:3px; border-radius:50%; background:#fff; box-shadow:0 1px 4px rgba(0,0,0,.18); transition:.2s ease; }
+        .fm-switch input:checked + .fm-switch-slider { background:var(--fm-accent); }
+        .fm-switch input:checked + .fm-switch-slider::before { transform:translateX(18px); }
+
+        .fm-bottom-nav { display:grid; grid-template-columns:repeat(2,1fr); gap:4px; padding:8px 8px max(8px, env(safe-area-inset-bottom)); border-top:0; background:rgba(0,0,0,.02); flex:0 0 auto; }
+        .fm-nav-btn { min-width:0; height:44px; border:0; border-radius:13px; background:transparent; color:var(--fm-text-sub); display:flex; flex-direction:column; align-items:center; justify-content:center; gap:3px; cursor:pointer; font-size:10px; }
+        .fm-nav-btn i { font-size:15px; }
+        .fm-nav-btn.active { color:var(--fm-accent); background:transparent; }
+
+        @media (min-width: 700px) {
+            .fm-panel { width:400px; }
+            .fm-page { padding-left:18px; padding-right:18px; }
+        }
+    `;
+    shadow.appendChild(style);
+
+    const wrapper = targetDoc.createElement('div');
+    wrapper.className = `theme-${STATE.currentTheme}`;
+    wrapper.style.contain = 'layout style';
+    
+    wrapper.innerHTML = `
+        <div class="fm-ball" id="fm-ball" title="拖拽移动，点击展开"><i class="fas fa-music"></i></div>
+
+        <div class="fm-panel" id="fm-panel">
+            <div class="fm-panel-bg" id="fm-panel-bg"></div>
+
+            <div class="fm-app-head">
+                <div class="fm-brand">
+                    <div class="fm-brand-text">
+                        <div class="fm-app-name">播放器测试</div>
+                        <div class="fm-app-sub">MUSIC PLAYER</div>
+                    </div>
+                </div>
+                <button class="fm-close-btn" id="fm-close"><i class="fas fa-times"></i></button>
+            </div>
+
+            <main class="fm-pages">
+                <!-- 播放与歌单 -->
+                <section class="fm-page fm-page-play active" data-page="play">
+                    <div class="fm-now-playing">
+                        <div class="fm-now-cover" id="fm-now-cover">
+                            <i class="fas fa-compact-disc"></i>
+                        </div>
+                        <div class="fm-now-meta">
+                            <div class="fm-section-kicker" id="fm-now-playing-label">NOW PLAYING</div>
+                            <div class="fm-title" id="fm-title">播放器测试</div>
+                            <div class="fm-artist" id="fm-artist">Awaiting Connection...</div>
+                        </div>
+                    </div>
+
+                    <div class="fm-progress-wrap" id="fm-progress-wrap">
+                        <div class="fm-progress-track" id="fm-progress-track">
+                            <div class="fm-progress-fill" id="fm-progress-fill"></div>
+                            <div class="fm-progress-thumb" id="fm-progress-thumb"></div>
+                        </div>
+                        <div class="fm-time-row">
+                            <span id="fm-time-current">0:00</span>
+                            <span id="fm-time-duration">0:00</span>
+                        </div>
+                    </div>
+
+                    <div class="fm-controls">
+                        <button class="fm-btn" id="fm-mode" title="播放模式"><i class="fas fa-retweet"></i></button>
+                        <button class="fm-btn" id="fm-prev"><i class="fas fa-step-backward"></i></button>
+                        <button class="fm-btn play-pause" id="fm-play"><i class="fas fa-play"></i></button>
+                        <button class="fm-btn" id="fm-next"><i class="fas fa-step-forward"></i></button>
+                        <button class="fm-btn active-state" id="fm-lrc-toggle" title="外显歌词"><i class="fas fa-closed-captioning"></i></button>
+                    </div>
+
+                    <section class="fm-page-playlist" id="fm-playlist-section">
+                        <div class="fm-input-wrap fm-library-input">
+                            <select class="fm-select" id="fm-source-select">
+                                <option value="netease">网易云</option>
+                                <option value="tencent">QQ音乐</option>
+                                <option value="search">搜单曲</option>
+                                <option value="search_local">搜列表</option>
+                            </select>
+                            <input type="text" class="fm-input" id="fm-input" placeholder="输入歌单ID或链接" autocomplete="off">
+                            <button class="fm-add-btn" id="fm-add">导入</button>
+                        </div>
+
+                        <div class="fm-list-section">
+                            <div class="fm-playlist-tabs" id="fm-playlist-tabs"></div>
+                            <div class="fm-playlist" id="fm-playlist"></div>
+                        </div>
+                    </section>
+                </section>
+
+                <!-- 外观设置 -->
+                <section class="fm-page fm-page-more" data-page="more">
+                    <div class="fm-page-title">
+                        <div>
+                            <div class="fm-section-kicker">CUSTOMIZE</div>
+                            <h2>外观设置</h2>
+                        </div>
+                    </div>
+
+                    <div class="fm-settings-section">
+                        <div class="fm-settings-section-title">外观</div>
+                        <div class="fm-theme-row">
+                            <div class="fm-theme-dot dot-adaptive active" data-theme="adaptive" title="自适应"></div>
+                            <div class="fm-theme-dot dot-light" data-theme="light" title="极简白"></div>
+                            <div class="fm-theme-dot dot-dark" data-theme="dark" title="深邃黑"></div>
+                            <div class="fm-theme-dot dot-glass" data-theme="glass" title="毛玻璃"></div>
+                        </div>
+                        <div class="fm-more-row">
+                            <span>悬浮球大小</span>
+                            <input type="range" class="fm-size-slider" id="fm-size-slider" min="30" max="80" value="50">
+                        </div>
+                        <div class="fm-appearance-pair">
+                            <div class="fm-more-row">
+                                <span>强调色</span>
+                                <input type="color" class="fm-color-picker" id="fm-color-picker" value="#4a90e2">
+                            </div>
+                            <div class="fm-more-row">
+                                <span>形状</span>
+                                <button class="fm-wide-btn" id="fm-shape-btn"><i class="fas fa-square"></i><span>切换</span></button>
+                            </div>
+                        </div>
+                        <div class="fm-more-row">
+                            <span>悬浮球</span>
+                            <label class="fm-switch" title="显示或隐藏悬浮球">
+                                <input type="checkbox" id="fm-ball-visible-toggle">
+                                <span class="fm-switch-slider"></span>
+                            </label>
+                        </div>
+                    </div>
+
+                    <div class="fm-settings-section fm-lyrics-settings-section">
+                        <div class="fm-settings-section-title">歌词</div>
+                        <div class="fm-setting-card fm-play-lyrics-settings">
+                            <div class="fm-setting-card-head">
+                                <div>
+                                    <div class="fm-card-title">歌词显示</div>
+                                    <div class="fm-card-sub">选择外显歌词样式、字号与位置</div>
+                                </div>
+                                <button class="fm-btn fm-inline-icon-btn" id="fm-lrc-settings" title="歌词设置"><i class="fas fa-sliders-h"></i></button>
+                            </div>
+                            <div class="fm-lrc-settings-panel open" id="fm-lrc-settings-panel">
+                                <div class="fm-lrc-settings-row">
+                                    <span class="fm-lrc-settings-label">样式</span>
+                                    <div class="fm-lrc-mode-switch">
+                                        <button class="fm-lrc-mode-btn" id="fm-lrc-mode-plain" data-mode="plain">普通歌词</button>
+                                        <button class="fm-lrc-mode-btn" id="fm-lrc-mode-popup" data-mode="popup">逐句显现</button>
+                                        <button class="fm-lrc-mode-btn" id="fm-lrc-mode-scroll" data-mode="scroll">三行滚动</button>
+                                        <button class="fm-lrc-mode-btn" id="fm-lrc-mode-fall" data-mode="fall">随机掉落</button>
+                                    </div>
+                                </div>
+                                <div class="fm-lrc-settings-row">
+                                    <span class="fm-lrc-settings-label">字号</span>
+                                    <input type="range" id="fm-lrc-font-slider" min="12" max="32" step="1">
+                                </div>
+                                <div class="fm-lrc-settings-row">
+                                    <span class="fm-lrc-settings-label">位置</span>
+                                    <input type="range" id="fm-lrc-bottom-slider" min="40" max="400" step="5">
+                                </div>
+                                <div class="fm-lrc-settings-row fm-lrc-font-row">
+                                    <span class="fm-lrc-settings-label">字体</span>
+                                    <div class="fm-lrc-font-picker">
+                                        <input class="fm-lrc-font-current" id="fm-lrc-font-current" type="text" value="默认字体" readonly aria-label="当前桌面歌词字体">
+                                        <div class="fm-lrc-font-url-row">
+                                            <input class="fm-lrc-font-url" id="fm-lrc-font-url" type="url" placeholder="粘贴 ZeoSeven 字体详情页 URL" autocomplete="off" aria-label="ZeoSeven 字体网址">
+                                            <button class="fm-lrc-font-import" id="fm-lrc-font-import" type="button">导入</button>
+                                        </div>
+                                        <button class="fm-lrc-font-reset" id="fm-lrc-font-reset" type="button">恢复默认字体</button>
+                                        <div class="fm-lrc-font-hint">例如：https://fonts.zeoseven.com/items/217/　只会应用到桌面歌词</div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="fm-settings-section">
+                        <div class="fm-settings-section-title">播放器小图装修</div>
+                        <input type="file" id="fm-decoration-upload" accept="image/*" style="display:none;">
+                        <div class="fm-decoration-preview">
+                            <div class="fm-now-cover" id="fm-decoration-preview-cover"><i class="fas fa-compact-disc"></i></div>
+                            <div class="fm-decoration-preview-text">
+                                <strong>小图装饰</strong>
+                                <span>上传一张小图片，替换播放卡片左侧的唱片图标。</span>
+                            </div>
+                        </div>
+                        <div class="fm-bg-action-row">
+                            <button class="fm-bg-btn" id="fm-decoration-btn-upload"><i class="fas fa-image"></i> 上传小图</button>
+                            <button class="fm-bg-btn" id="fm-decoration-btn-clear"><i class="fas fa-trash"></i> 清除</button>
+                        </div>
+                        <div class="fm-more-row">
+                            <span>播放标签</span>
+                            <input type="text" class="fm-input fm-decoration-input" id="fm-decoration-label" maxlength="24" placeholder="NOW PLAYING" autocomplete="off">
+                        </div>
+                    </div>
+
+                    <div class="fm-settings-section">
+                        <div class="fm-settings-section-title">壁纸</div>
+                        <input type="file" id="fm-bg-upload" accept="image/*" style="display:none;">
+                        <div class="fm-bg-action-row">
+                            <button class="fm-bg-btn" id="fm-bg-btn-upload"><i class="fas fa-image"></i> 上传壁纸</button>
+                            <button class="fm-bg-btn" id="fm-bg-btn-clear"><i class="fas fa-trash"></i> 清除</button>
+                            <button class="fm-bg-btn" id="fm-bg-btn-ratio"><i class="fas fa-crop-alt"></i> 比例</button>
+                        </div>
+                        <div class="fm-more-row">
+                            <span>模糊</span>
+                            <div class="fm-range-with-icon"><i class="fas fa-tint"></i><input type="range" class="fm-bg-slider" id="fm-bg-blur" min="0" max="30" value="10"></div>
+                        </div>
+                        <div class="fm-more-row">
+                            <span>亮度</span>
+                            <div class="fm-range-with-icon"><i class="fas fa-sun"></i><input type="range" class="fm-bg-slider" id="fm-bg-brightness" min="10" max="150" value="70"></div>
+                        </div>
+                    </div>
+                </section>
+            </main>
+
+            <nav class="fm-bottom-nav" id="fm-bottom-nav">
+                <button class="fm-nav-btn active" data-page-target="play">
+                    <i class="fas fa-music"></i><span>播放与歌单</span>
+                </button>
+                <button class="fm-nav-btn" data-page-target="more">
+                    <i class="fas fa-sliders-h"></i><span>外观设置</span>
+                </button>
+            </nav>
+        </div>
+
+
+        <div class="fm-pop-menu" id="fm-pop-menu"></div>
+        <div class="fm-out-lyrics show" id="fm-out-lyrics"></div>
+        <div class="fm-out-lyrics-scroll show" id="fm-out-lyrics-scroll"><div class="fm-lrc-scroll-list" id="fm-lrc-scroll-list"></div></div>
+    `;
+    shadow.appendChild(wrapper);
+
+    const UI = {
+        wrapper: wrapper,
+        ball: wrapper.querySelector('#fm-ball'),
+        panel: wrapper.querySelector('#fm-panel'),
+        closeBtn: wrapper.querySelector('#fm-close'),
+        title: wrapper.querySelector('#fm-title'),
+        artist: wrapper.querySelector('#fm-artist'),
+        nowCover: wrapper.querySelector('#fm-now-cover'),
+        nowPlayingLabel: wrapper.querySelector('#fm-now-playing-label'),
+        decorationPreviewCover: wrapper.querySelector('#fm-decoration-preview-cover'),
+        decorationUploadInput: wrapper.querySelector('#fm-decoration-upload'),
+        decorationUploadBtn: wrapper.querySelector('#fm-decoration-btn-upload'),
+        decorationClearBtn: wrapper.querySelector('#fm-decoration-btn-clear'),
+        decorationLabelInput: wrapper.querySelector('#fm-decoration-label'),
+        playBtn: wrapper.querySelector('#fm-play'),
+        prevBtn: wrapper.querySelector('#fm-prev'),
+        nextBtn: wrapper.querySelector('#fm-next'),
+        modeBtn: wrapper.querySelector('#fm-mode'),
+        lrcToggleBtn: wrapper.querySelector('#fm-lrc-toggle'),
+        lrcSettingsBtn: wrapper.querySelector('#fm-lrc-settings'),
+        lrcSettingsPanel: wrapper.querySelector('#fm-lrc-settings-panel'),
+        lrcModePlainBtn: wrapper.querySelector('#fm-lrc-mode-plain'),
+        lrcModePopupBtn: wrapper.querySelector('#fm-lrc-mode-popup'),
+        lrcModeScrollBtn: wrapper.querySelector('#fm-lrc-mode-scroll'),
+        lrcModeFallBtn: wrapper.querySelector('#fm-lrc-mode-fall'),
+        lrcFontSlider: wrapper.querySelector('#fm-lrc-font-slider'),
+        lrcBottomSlider: wrapper.querySelector('#fm-lrc-bottom-slider'),
+        lrcFontCurrent: wrapper.querySelector('#fm-lrc-font-current'),
+        lrcFontUrl: wrapper.querySelector('#fm-lrc-font-url'),
+        lrcFontImport: wrapper.querySelector('#fm-lrc-font-import'),
+        lrcFontReset: wrapper.querySelector('#fm-lrc-font-reset'),
+        outLyricsScroll: wrapper.querySelector('#fm-out-lyrics-scroll'),
+        outLyricsScrollList: wrapper.querySelector('#fm-lrc-scroll-list'),
+        sourceSelect: wrapper.querySelector('#fm-source-select'),
+        input: wrapper.querySelector('#fm-input'),
+        addBtn: wrapper.querySelector('#fm-add'),
+        playlistTabs: wrapper.querySelector('#fm-playlist-tabs'),
+        popMenu: wrapper.querySelector('#fm-pop-menu'),
+        playlistEl: wrapper.querySelector('#fm-playlist'),
+        themeDots: wrapper.querySelectorAll('.fm-theme-dot'),
+        sizeSlider: wrapper.querySelector('#fm-size-slider'),
+        colorPicker: wrapper.querySelector('#fm-color-picker'),
+        shapeBtn: wrapper.querySelector('#fm-shape-btn'),
+        ballVisibleToggle: wrapper.querySelector('#fm-ball-visible-toggle'),
+        bgUploadInput: wrapper.querySelector('#fm-bg-upload'),
+        bgUploadBtn: wrapper.querySelector('#fm-bg-btn-upload'),
+        bgClearBtn: wrapper.querySelector('#fm-bg-btn-clear'),
+        ratioBtn: wrapper.querySelector('#fm-bg-btn-ratio'),
+        bgBlurSlider: wrapper.querySelector('#fm-bg-blur'),
+        bgBrightnessSlider: wrapper.querySelector('#fm-bg-brightness'),
+        outLyrics: wrapper.querySelector('#fm-out-lyrics'),
+        progressTrack: wrapper.querySelector('#fm-progress-track'),
+        progressFill: wrapper.querySelector('#fm-progress-fill'),
+        progressThumb: wrapper.querySelector('#fm-progress-thumb'),
+        timeCurrent: wrapper.querySelector('#fm-time-current'),
+        timeDuration: wrapper.querySelector('#fm-time-duration')
+    };
+
+    // ================= 桌面歌词字体 =================
+    // 只接受用户主动提供的 ZeoSeven 字体详情页 / FontsAPI URL。
+    // 不抓取整个字体网站，也不维护庞大的在线字体目录，避免 WebView 卡顿。
+    const loadedFontCss = new Set();
+    const loadingFontCss = new Map();
+
+    // 只在用户点击“导入”后加载字体 CSS。不要 fetch ZeoSeven 页面：
+    // Tauri/WebView 对跨域 fetch 的限制可能导致明明字体 CSS 能加载，却拿不到文本。
+    const extractFontFamilyFromRules = (rules) => {
+        try {
+            for (const rule of Array.from(rules || [])) {
+                if (rule.type === targetWin.CSSRule.FONT_FACE_RULE || rule.cssText?.startsWith('@font-face')) {
+                    const family = rule.style?.getPropertyValue('font-family') || '';
+                    if (family.trim()) return family.trim().replace(/^['"]|['"]$/g, '');
+                }
+                if (rule.cssRules) {
+                    const nested = extractFontFamilyFromRules(rule.cssRules);
+                    if (nested) return nested;
+                }
+            }
+        } catch (_) {}
+        return '';
+    };
+
+    const loadZeoCssAndReadFamily = (cssUrl, timeout = 7000) => new Promise((resolve) => {
+        let settled = false;
+        const finish = (family) => {
+            if (settled) return;
+            settled = true;
+            if (timer) clearTimeout(timer);
+            resolve(family || '');
+        };
+        const id = 'fm-zeofont-inspect-' + btoa(unescape(encodeURIComponent(cssUrl))).replace(/[^a-zA-Z0-9]/g,'').slice(-28);
+        const old = targetDoc.getElementById(id);
+        // 每次导入都重新挂载 CSS link，避免旧 stylesheet 在 WebView 中处于
+        // 半加载/不可读状态时，把后续导入卡在“加载中”。
+        if (old) {
+            try { old.remove(); } catch (_) {}
+        }
+        const link = targetDoc.createElement('link');
+        link.id = id;
+        link.rel = 'stylesheet';
+        link.href = cssUrl;
+        link.crossOrigin = 'anonymous';
+        const timer = setTimeout(() => finish(''), timeout);
+        link.onload = () => {
+            let family = '';
+            try { family = extractFontFamilyFromRules(link.sheet?.cssRules); } catch (_) {}
+            finish(family);
+        };
+        link.onerror = () => finish('');
+        (targetDoc.head || targetDoc.documentElement).appendChild(link);
+    });
+
+    const parseZeoSevenUrl = (rawUrl) => {
+        let url;
+        try { url = new URL(String(rawUrl || '').trim()); } catch (_) { return null; }
+        const host = url.hostname.toLowerCase();
+        if (host !== 'fonts.zeoseven.com' && host !== 'www.fonts.zeoseven.com' && host !== 'fontsapi.zeoseven.com') return null;
+        if (host === 'fonts.zeoseven.com' || host === 'www.fonts.zeoseven.com') {
+            const m = url.pathname.match(/^\/items\/([^/]+)\/?$/i);
+            if (!m) return null;
+            const id = decodeURIComponent(m[1]);
+            return { id, css: `https://fontsapi.zeoseven.com/${encodeURIComponent(id)}/main/result.css`, pageUrl: `https://fonts.zeoseven.com/items/${encodeURIComponent(id)}/` };
+        }
+        const m = url.pathname.match(/^\/([^/]+)\/main\/result\.css$/i);
+        if (!m) return null;
+        const id = decodeURIComponent(m[1]);
+        return { id, css: url.href, pageUrl: `https://fonts.zeoseven.com/items/${encodeURIComponent(id)}/` };
+    };
+
+    const ensureZeoFontLoaded = (font) => {
+        if (!font?.css || !font?.family) return Promise.resolve(false);
+        if (loadedFontCss.has(font.css)) return Promise.resolve(true);
+        if (loadingFontCss.has(font.css)) return loadingFontCss.get(font.css);
+
+        const promise = new Promise((resolve) => {
+            let settled = false;
+            let timer = null;
+            const finish = (ok) => {
+                if (settled) return;
+                settled = true;
+                if (timer) clearTimeout(timer);
+                if (ok) loadedFontCss.add(font.css);
+                loadingFontCss.delete(font.css);
+                resolve(ok);
+            };
+
+            const id = 'fm-zeofont-' + btoa(unescape(encodeURIComponent(font.css))).replace(/[^a-zA-Z0-9]/g,'').slice(-28);
+            const old = targetDoc.getElementById(id);
+            if (old) { loadedFontCss.add(font.css); finish(true); return; }
+
+            const link = targetDoc.createElement('link');
+            link.id = id;
+            link.rel = 'stylesheet';
+            link.href = font.css;
+            link.crossOrigin = 'anonymous';
+            timer = setTimeout(() => finish(false), 7000);
+            link.onload = async () => {
+                try {
+                    if (targetDoc.fonts?.load) {
+                        await Promise.race([
+                            targetDoc.fonts.load(`16px "${font.family.replace(/"/g, '\\"')}"`),
+                            new Promise(r => setTimeout(r, 1800))
+                        ]);
+                    }
+                } catch (_) {}
+                finish(true);
+            };
+            link.onerror = () => finish(false);
+            (targetDoc.head || targetDoc.documentElement).appendChild(link);
+        });
+
+        loadingFontCss.set(font.css, promise);
+        return promise;
+    };
+
+    const setLrcFontVisual = (font) => {
+        const family = font?.family || '';
+        const safeFamily = family ? `"${family.replace(/"/g,'\\"')}"` : '';
+        UI.wrapper.style.setProperty('--fm-lrc-family', safeFamily || 'var(--fm-font)');
+        const lyricRoots = [UI.outLyrics, UI.outLyricsScroll, UI.outLyricsScrollList].filter(Boolean);
+        lyricRoots.forEach(root => {
+            root.style.setProperty('font-family', safeFamily || 'var(--fm-font)', 'important');
+            root.querySelectorAll('*').forEach(el => el.style.setProperty('font-family', safeFamily || 'var(--fm-font)', 'important'));
+        });
+        if (UI.lrcFontCurrent) {
+            UI.lrcFontCurrent.value = font?.name || '默认字体';
+            UI.lrcFontCurrent.style.fontFamily = safeFamily || '';
+        }
+    };
+
+    const applyLrcFont = (font, persist = true) => {
+        setLrcFontVisual(font);
+        if (persist) {
+            savedSettings.lrcFontName = font?.name || '默认字体';
+            savedSettings.lrcFontFamily = font?.family || '';
+            savedSettings.lrcFontCss = font?.css || '';
+            savedSettings.lrcFontId = font?.id || '';
+            savedSettings.lrcFontUrl = font?.pageUrl || '';
+            scheduleSettingsSave();
+        }
+    };
+
+    const getSavedLrcFont = () => {
+        if (savedSettings.lrcFontName === '默认字体' || !savedSettings.lrcFontFamily || !savedSettings.lrcFontCss) return null;
+        return {
+            id: savedSettings.lrcFontId || '',
+            name: savedSettings.lrcFontName,
+            family: savedSettings.lrcFontFamily,
+            css: savedSettings.lrcFontCss,
+            pageUrl: savedSettings.lrcFontUrl || ''
+        };
+    };
+
+    // 恢复播放器原本的桌面歌词字体：清除当前自定义字体样式与保存项，
+    // 但不影响其他外观、歌词字号/位置、歌单或播放器字体。
+    const resetLrcFontToDefault = () => {
+        try {
+            targetDoc.querySelectorAll('link[id^="fm-zeofont-"]').forEach(link => {
+                try { link.remove(); } catch (_) {}
+            });
+            targetDoc.querySelectorAll('link[id^="fm-zeofont-inspect-"]').forEach(link => {
+                try { link.remove(); } catch (_) {}
+            });
+        } catch (_) {}
+
+        loadedFontCss.clear();
+        loadingFontCss.clear();
+        savedSettings.lrcFontName = '默认字体';
+        savedSettings.lrcFontFamily = '';
+        savedSettings.lrcFontCss = '';
+        savedSettings.lrcFontId = '';
+        savedSettings.lrcFontUrl = '';
+        if (UI.lrcFontUrl) UI.lrcFontUrl.value = '';
+        applyLrcFont(null, true);
+        API.toast('已恢复默认字体');
+    };
+
+    const importZeoSevenFont = async () => {
+        const raw = UI.lrcFontUrl?.value.trim();
+        if (!raw) { API.toast('请先粘贴 ZeoSeven 字体网址'); return; }
+        const parsed = parseZeoSevenUrl(raw);
+        if (!parsed) {
+            API.toast('请输入 ZeoSeven 字体详情页网址，例如 https://fonts.zeoseven.com/items/217/');
+            return;
+        }
+
+        const btn = UI.lrcFontImport;
+        if (btn) { btn.disabled = true; btn.textContent = '加载中'; }
+        try {
+            // 关键：直接加载 FontsAPI CSS，再从已经加载的 stylesheet 读取 @font-face。
+            // 不再 fetch ZeoSeven 页面，避免 Tauri/WebView 的跨域 fetch 导致导入失败。
+            const family = await loadZeoCssAndReadFamily(parsed.css, 7000);
+            if (!family) {
+                API.toast('字体 CSS 已请求，但没有读取到 font-family；请检查该字体的 FontsAPI 是否可用');
+                return;
+            }
+
+            const name = family;
+            const font = { id: parsed.id, name, family, css: parsed.css, pageUrl: parsed.pageUrl };
+            const ok = await ensureZeoFontLoaded(font);
+            if (!ok) { API.toast('字体加载失败，请检查网络后重试'); return; }
+
+            applyLrcFont(font, true);
+            if (UI.lrcFontUrl) UI.lrcFontUrl.value = parsed.pageUrl;
+            API.toast(`已导入并应用：${name}`);
+        } catch (err) {
+            console.warn('[ArV] ZeoSeven font import failed:', err);
+            API.toast('字体导入失败，请检查网址和网络连接');
+        } finally {
+            if (btn) { btn.disabled = false; btn.textContent = '导入'; }
+        }
+    };
+
+    // 防止误点/连点导致字体导入流程重复启动；不会触碰歌单导入按钮。
+    let isImportingZeoFont = false;
+    const originalImportZeoSevenFont = importZeoSevenFont;
+    const guardedImportZeoSevenFont = async () => {
+        if (isImportingZeoFont) return;
+        isImportingZeoFont = true;
+        try {
+            await originalImportZeoSevenFont();
+        } finally {
+            isImportingZeoFont = false;
+            if (UI.lrcFontImport) {
+                UI.lrcFontImport.disabled = false;
+                UI.lrcFontImport.textContent = '导入';
+            }
+        }
+    };
+    UI.lrcFontImport?.addEventListener('click', guardedImportZeoSevenFont);
+    UI.lrcFontUrl?.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') guardedImportZeoSevenFont();
+    });
+
+    UI.lrcFontReset?.addEventListener('click', resetLrcFontToDefault);
+
+    // 自定义歌词字体不在酒馆启动阶段请求。
+    // 第一次打开播放器时再恢复，避免脚本加载阶段产生网络请求与字体解析。
+    const restoreSavedLrcFontWhenOpened = () => {
+        const savedLrcFont = getSavedLrcFont();
+        if (savedLrcFont) {
+            ensureZeoFontLoaded(savedLrcFont).then(ok => {
+                if (ok) setLrcFontVisual(savedLrcFont);
+            });
+        } else {
+            setLrcFontVisual(null);
+        }
+    };
+
+    // ================= 页面导航 =================
+    UI.themeDots.forEach(dot => dot.classList.toggle('active', dot.dataset.theme === STATE.currentTheme));
+
+    const pageEls = wrapper.querySelectorAll('.fm-page');
+    const navEls = wrapper.querySelectorAll('.fm-nav-btn');
+
+    function switchPlayerPage(pageName) {
+        pageEls.forEach(page => page.classList.toggle('active', page.dataset.page === pageName));
+        navEls.forEach(btn => btn.classList.toggle('active', btn.dataset.pageTarget === pageName));
+    }
+
+    navEls.forEach(btn => btn.addEventListener('click', () => switchPlayerPage(btn.dataset.pageTarget)));
+    const quickLibraryBtn = wrapper.querySelector('#fm-quick-library-btn');
+    if (quickLibraryBtn) quickLibraryBtn.addEventListener('click', () => {
+        switchPlayerPage('play');
+        const playlistSection = wrapper.querySelector('#fm-playlist-section');
+        if (playlistSection) playlistSection.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    });
+
+    // ================= 核心逻辑 =================
+
+    // 拖拽与面板定位
+    function initDraggable() {
+        let isDragging = false;
+        let startX, startY, initialLeft, initialTop;
+        let currentX, currentY;
+        let rafId = null;
+        let panelOffsetX = 0, panelOffsetY = 0;
+        
+        const initX = targetWin.innerWidth - 120;
+        const initY = CONFIG.SAFE_MARGIN + 60;
+        UI.ball.style.left = `${initX}px`;
+        UI.ball.style.top = `${initY}px`;
+
+        const updatePos = () => {
+            if (!isDragging) return;
+            const dx = currentX - startX;
+            const dy = currentY - startY;
+            
+            if (Math.abs(dx) > 3 || Math.abs(dy) > 3) UI.ball.setAttribute('data-dragged', 'true');
+
+            let newLeft = initialLeft + dx;
+            let newTop = initialTop + dy;
+            
+            const currentSize = parseInt(savedSettings.ballSize) || 50;
+            const maxLeft = targetWin.innerWidth - currentSize - CONFIG.SAFE_MARGIN;
+            const maxTop = targetWin.innerHeight - currentSize - CONFIG.SAFE_MARGIN;
+            
+            newLeft = Math.max(CONFIG.SAFE_MARGIN, Math.min(newLeft, maxLeft));
+            newTop = Math.max(CONFIG.SAFE_MARGIN, Math.min(newTop, maxTop));
+
+            UI.ball.style.left = `${newLeft}px`;
+            UI.ball.style.top = `${newTop}px`;
+            
+            if (STATE.isExpanded) {
+                const panelWidth = UI.panel.offsetWidth;
+                const panelHeight = UI.panel.offsetHeight || 540;
+                let pLeft = newLeft - panelOffsetX;
+                let pTop = newTop - panelOffsetY;
+                
+                pLeft = Math.max(CONFIG.SAFE_MARGIN, Math.min(pLeft, targetWin.innerWidth - panelWidth - CONFIG.SAFE_MARGIN));
+                pTop = Math.max(CONFIG.SAFE_MARGIN, Math.min(pTop, targetWin.innerHeight - panelHeight - CONFIG.SAFE_MARGIN));
+                
+                UI.panel.style.left = `${pLeft}px`;
+                UI.panel.style.top = `${pTop}px`;
+            }
+            rafId = null;
+        };
+
+        const onDown = (e) => {
+            if (e.button !== 0) return;
+            isDragging = true;
+            UI.ball.setAttribute('data-dragged', 'false');
+            UI.ball.style.transition = 'none';
+
+            const rect = UI.ball.getBoundingClientRect();
+            initialLeft = rect.left;
+            initialTop = rect.top;
+            startX = e.clientX; startY = e.clientY;
+            currentX = startX; currentY = startY;
+            
+            if (STATE.isExpanded) {
+                const pRect = UI.panel.getBoundingClientRect();
+                panelOffsetX = initialLeft - pRect.left;
+                panelOffsetY = initialTop - pRect.top;
+                UI.panel.style.transition = 'none';
+            }
+
+            targetDoc.addEventListener('pointermove', onMove);
+            targetDoc.addEventListener('pointerup', onUp);
+            targetDoc.addEventListener('pointercancel', onUp);
+            UI.ball.setPointerCapture(e.pointerId);
+        };
+
+        const onMove = (e) => {
+            if (!isDragging) return;
+            currentX = e.clientX; currentY = e.clientY;
+            if (!rafId) rafId = requestAnimationFrame(updatePos);
+        };
+
+        const onUp = (e) => {
+            if (!isDragging) return;
+            if (rafId) { cancelAnimationFrame(rafId); rafId = null; updatePos(); }
+            isDragging = false;
+            targetDoc.removeEventListener('pointermove', onMove);
+            targetDoc.removeEventListener('pointerup', onUp);
+            targetDoc.removeEventListener('pointercancel', onUp);
+            try { UI.ball.releasePointerCapture(e.pointerId); } catch (err) {}
+            requestAnimationFrame(() => { 
+                UI.ball.style.transition = ''; 
+                if (STATE.isExpanded) UI.panel.style.transition = '';
+            });
+
+            if (UI.ball.getAttribute('data-dragged') === 'false') togglePanel();
+        };
+
+        UI.ball.addEventListener('pointerdown', onDown);
+    }
+
+    // 修复：壁纸自适应与边界限制
+    function togglePanel() {
+        STATE.isExpanded = !STATE.isExpanded;
+        const currentSize = parseInt(savedSettings.ballSize) || 50;
+        
+        if (STATE.isExpanded) {
+            preparePlaylistsForUI();
+            if (!STATE.uiInitialized) {
+                STATE.uiInitialized = true;
+                initDraggable();
+                initProgressBar();
+                renderListUI();
+                restoreSavedLrcFontWhenOpened();
+                if (startupDedupeCount > 0 || startupLimitCount > 0) {
+                    let msg = `[优化] 启动清理完成：`;
+                    if (startupDedupeCount > 0) msg += `移除 ${startupDedupeCount} 首重复歌曲。`;
+                    if (startupLimitCount > 0) msg += `截断 ${startupLimitCount} 首超出容量限制的歌曲。`;
+                    API.toast(msg);
+                }
+            }
+            applySettings(); 
+            
+            // 使用实际 CSS 宽度，避免小屏 max-width 与 JS 估算不一致。
+            const panelWidth = Math.min(UI.panel.offsetWidth || 400, targetWin.innerWidth - CONFIG.SAFE_MARGIN * 2);
+            
+            let estimatedHeight = 540;
+            if (savedSettings.panelRatio === '3:4') {
+                estimatedHeight = panelWidth * (4/3);
+            } else if (savedSettings.panelRatio === '9:16') {
+                estimatedHeight = panelWidth * (16/9);
+            } else if (savedSettings.panelRatio === 'default' && savedSettings.bgImageWidth && savedSettings.bgImageHeight) {
+                // 严格根据图片原始比例计算
+                estimatedHeight = panelWidth * (savedSettings.bgImageHeight / savedSettings.bgImageWidth);
+            }
+            
+            // 强力边界约束：无论计算出多高，绝对不能超出屏幕
+            const maxAllowedHeight = targetWin.innerHeight - (CONFIG.SAFE_MARGIN * 2);
+            const panelHeight = Math.min(estimatedHeight, maxAllowedHeight);
+            
+            // 应用计算后的高度
+            UI.panel.style.height = `${panelHeight}px`;
+            
+            let pLeft = targetWin.innerWidth / 2 - panelWidth / 2;
+            let pTop = targetWin.innerHeight / 2 - panelHeight / 2;
+            
+            pLeft = Math.max(CONFIG.SAFE_MARGIN, Math.min(pLeft, targetWin.innerWidth - panelWidth - CONFIG.SAFE_MARGIN));
+            pTop = Math.max(CONFIG.SAFE_MARGIN, Math.min(pTop, targetWin.innerHeight - panelHeight - CONFIG.SAFE_MARGIN));
+            
+            UI.panel.style.left = `${pLeft}px`;
+            UI.panel.style.top = `${pTop}px`;
+            
+            let bLeft, bTop;
+            if (targetWin.innerHeight - (pTop + panelHeight) < 100) {
+                bLeft = pLeft + panelWidth - currentSize / 2;
+                bTop = pTop + panelHeight - currentSize / 2;
+            } else {
+                bLeft = pLeft - currentSize / 2;
+                bTop = pTop - currentSize / 2;
+            }
+            
+            bLeft = Math.max(CONFIG.SAFE_MARGIN, Math.min(bLeft, targetWin.innerWidth - currentSize - CONFIG.SAFE_MARGIN));
+            bTop = Math.max(CONFIG.SAFE_MARGIN, Math.min(bTop, targetWin.innerHeight - currentSize - CONFIG.SAFE_MARGIN));
+            
+            UI.ball.style.left = `${bLeft}px`;
+            UI.ball.style.top = `${bTop}px`;
+            
+            UI.ball.innerHTML = '<i class="fas fa-times"></i>';
+            UI.ball.classList.remove('playing');
+            UI.panel.classList.add('open');
+        } else {
+            UI.panel.classList.remove('open');
+            UI.ball.innerHTML = '<i class="fas fa-music"></i>';
+            if (STATE.isPlaying) UI.ball.classList.add('playing');
+        }
+    }
+
+    // 进度条逻辑
+    function withCacheBust(url) {
+        if (!url) return url;
+        try {
+            const u = new URL(url, targetWin.location.href);
+            u.searchParams.set('_t', Date.now());
+            return u.toString();
+        } catch (e) {
+            return url + (url.includes('?') ? '&' : '?') + '_t=' + Date.now();
+        }
+    }
+    function formatTime(sec) {
+        if (!isFinite(sec) || isNaN(sec) || sec < 0) return '0:00';
+        const m = Math.floor(sec / 60);
+        const s = Math.floor(sec % 60);
+        return `${m}:${s < 10 ? '0' : ''}${s}`;
+    }
+
+    function updateProgressUI(current, duration) {
+        const pct = (duration && isFinite(duration) && duration > 0) ? Math.min(100, Math.max(0, (current / duration) * 100)) : 0;
+        UI.progressFill.style.width = `${pct}%`;
+        UI.progressThumb.style.left = `${pct}%`;
+        UI.timeCurrent.textContent = formatTime(current);
+        UI.timeDuration.textContent = formatTime(duration);
+    }
+
+    function initProgressBar() {
+        const track = UI.progressTrack;
+        const ratioFromEvent = (e) => {
+            const rect = track.getBoundingClientRect();
+            const x = e.clientX - rect.left;
+            return Math.min(1, Math.max(0, x / rect.width));
+        };
+        const applyRatio = (ratio) => {
+            const duration = audio.duration;
+            UI.progressFill.style.width = `${ratio * 100}%`;
+            UI.progressThumb.style.left = `${ratio * 100}%`;
+            if (duration && isFinite(duration)) UI.timeCurrent.textContent = formatTime(ratio * duration);
+            return duration;
+        };
+
+        const onDown = (e) => {
+            if (e.button !== undefined && e.button !== 0) return;
+            if (!audio.duration || !isFinite(audio.duration)) return;
+            STATE.isSeekingProgress = true;
+            track.classList.add('dragging');
+            applyRatio(ratioFromEvent(e));
+            track.setPointerCapture(e.pointerId);
+            track.addEventListener('pointermove', onMove);
+            track.addEventListener('pointerup', onUp);
+            track.addEventListener('pointercancel', onUp);
+        };
+        const onMove = (e) => { if (STATE.isSeekingProgress) applyRatio(ratioFromEvent(e)); };
+        const onUp = (e) => {
+            if (!STATE.isSeekingProgress) return;
+            const duration = applyRatio(ratioFromEvent(e));
+            if (duration && isFinite(duration)) audio.currentTime = ratioFromEvent(e) * duration;
+            STATE.isSeekingProgress = false;
+            track.classList.remove('dragging');
+            track.removeEventListener('pointermove', onMove);
+            track.removeEventListener('pointerup', onUp);
+            track.removeEventListener('pointercancel', onUp);
+            try { track.releasePointerCapture(e.pointerId); } catch (err) {}
+        };
+        track.addEventListener('pointerdown', onDown);
+    }
+
+    // 列表渲染逻辑
+    function renderTabs() {
+        UI.playlistTabs.innerHTML = '';
+
+        if (!STATE.isPlaylistHome) {
+            const current = getCurrentPlaylist();
+            const color = getPlaylistColor(current);
+
+            const head = targetDoc.createElement('div');
+            head.className = 'fm-playlist-detail-head';
+            const back = targetDoc.createElement('button');
+            back.className = 'fm-playlist-back';
+            back.type = 'button';
+            back.innerHTML = '<i class="fas fa-chevron-left"></i><span>歌单</span>';
+            back.onclick = (e) => {
+                e.preventDefault(); e.stopPropagation();
+                STATE.isPlaylistHome = true;
+                STATE.isShowingSearch = false;
+                renderListUI();
+            };
+            const title = targetDoc.createElement('div');
+            title.className = 'fm-playlist-detail-title';
+            title.textContent = current ? current.name : '歌单';
+            const manage = targetDoc.createElement('button');
+            manage.className = 'fm-playlist-manage-btn';
+            manage.type = 'button';
+            manage.title = '管理歌单';
+            manage.innerHTML = '<i class="fas fa-ellipsis-h"></i>';
+            manage.onclick = (e) => { e.preventDefault(); e.stopPropagation(); showPlaylistManageMenu(e, current); };
+            head.append(back, title, manage);
+            UI.playlistTabs.appendChild(head);
+
+            if (current) {
+                const hero = targetDoc.createElement('div');
+                hero.className = 'fm-playlist-hero';
+                hero.style.setProperty('--playlist-color', color);
+
+                const cover = targetDoc.createElement('div');
+                cover.className = 'fm-playlist-hero-cover';
+                renderPlaylistCover(cover, current);
+
+                const info = targetDoc.createElement('div');
+                info.className = 'fm-playlist-hero-info';
+                const name = targetDoc.createElement('div');
+                name.className = 'fm-playlist-hero-name';
+                name.textContent = current.name;
+                const count = targetDoc.createElement('div');
+                count.className = 'fm-playlist-hero-count';
+                count.textContent = `${current.tracks.length} 首歌曲`;
+                const desc = targetDoc.createElement('div');
+                desc.className = 'fm-playlist-hero-desc';
+                desc.textContent = current.description || '还没有写歌单简介';
+                info.append(name, count, desc);
+
+                const playAll = targetDoc.createElement('button');
+                playAll.className = 'fm-playlist-playall';
+                playAll.type = 'button';
+                playAll.innerHTML = '<i class="fas fa-play"></i><span>播放全部</span>';
+                playAll.onclick = (e) => {
+                    e.preventDefault(); e.stopPropagation();
+                    if (!current.tracks.length) { API.toast('这个歌单还没有歌曲'); return; }
+                    playTrack(0, current.id);
+                };
+
+                hero.append(cover, info, playAll);
+                UI.playlistTabs.appendChild(hero);
+            }
+            return;
+        }
+
+        const title = targetDoc.createElement('div');
+        title.className = 'fm-playlist-detail-title';
+        title.style.cssText = 'padding:4px 2px 3px;font-size:14px;';
+        title.textContent = '我的歌单';
+        UI.playlistTabs.appendChild(title);
+
+        STATE.playlists.forEach(p => {
+            const color = getPlaylistColor(p);
+            const row = targetDoc.createElement('div');
+            row.className = 'fm-playlist-row';
+            row.setAttribute('role', 'button');
+            row.tabIndex = 0;
+            row.style.setProperty('--playlist-color', color);
+
+            const cover = targetDoc.createElement('div');
+            cover.className = 'fm-playlist-row-cover';
+            renderPlaylistCover(cover, p);
+
+            const info = targetDoc.createElement('div');
+            info.className = 'fm-playlist-row-info';
+            const name = targetDoc.createElement('div');
+            name.className = 'fm-playlist-row-name';
+            name.textContent = p.name;
+            const count = targetDoc.createElement('div');
+            count.className = 'fm-playlist-row-count';
+            count.textContent = `${p.tracks.length} 首歌曲${p.description ? ' · 有简介' : ''}`;
+            info.append(name, count);
+
+            const manage = targetDoc.createElement('button');
+            manage.className = 'fm-playlist-row-manage';
+            manage.type = 'button';
+            manage.title = '管理歌单';
+            manage.innerHTML = '<i class="fas fa-ellipsis-v"></i>';
+            manage.onclick = (e) => { e.preventDefault(); e.stopPropagation(); showPlaylistManageMenu(e, p); };
+
+            row.append(cover, info, manage);
+            const open = () => {
+                STATE.currentPlaylistId = p.id;
+                STATE.isShowingSearch = false;
+                STATE.isPlaylistHome = false;
+                renderListUI();
+            };
+            row.addEventListener('click', open);
+            row.addEventListener('keydown', (e) => {
+                if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); open(); }
+            });
+            UI.playlistTabs.appendChild(row);
+        });
+
+        const addRow = targetDoc.createElement('div');
+        addRow.className = 'fm-playlist-add-row';
+        addRow.setAttribute('role', 'button');
+        addRow.innerHTML = '<i class="fas fa-plus"></i><span>新建歌单</span>';
+        addRow.onclick = (e) => {
+            e.preventDefault(); e.stopPropagation();
+            const name = targetWin.prompt('请输入新歌单名称：', '新建歌单');
+            if (!name || !name.trim()) return;
+            const newId = 'pl_' + Date.now() + '_' + Math.random().toString(36).slice(2, 7);
+            STATE.playlists.push({ id: newId, name: name.trim(), description: '', cover: '', color: DEFAULT_PLAYLIST_COLORS[STATE.playlists.length % DEFAULT_PLAYLIST_COLORS.length], tracks: [] });
+            STATE.currentPlaylistId = newId;
+            STATE.isShowingSearch = false;
+            STATE.isPlaylistHome = false;
+            savePlaylist();
+            renderListUI();
+        };
+        UI.playlistTabs.appendChild(addRow);
+    }
+
+    function showPlaylistManageMenu(e, playlist) {
+        if (!playlist) return;
+        e.stopPropagation();
+        UI.popMenu.innerHTML = '';
+        const items = [
+            ['fas fa-pen', '重命名', () => editPlaylistName(playlist)],
+            ['fas fa-align-left', '编辑简介', () => editPlaylistDescription(playlist)],
+            ['fas fa-image', '更换封面', () => editPlaylistCover(playlist)],
+            ['fas fa-palette', '更换颜色', () => editPlaylistColor(playlist)]
+        ];
+        if (playlist.cover) items.push(['fas fa-trash-alt', '恢复默认封面', () => clearPlaylistCover(playlist)]);
+        if (playlist.id !== 'default') items.push(['fas fa-times', '删除歌单', () => {
+            if (!targetWin.confirm(`确定要删除歌单 [${playlist.name}] 吗？`)) return;
+            STATE.playlists = STATE.playlists.filter(list => list.id !== playlist.id);
+            if (STATE.currentPlaylistId === playlist.id) STATE.currentPlaylistId = 'default';
+            if (STATE.playingPlaylistId === playlist.id) {
+                audio.pause(); STATE.playingPlaylistId = 'default'; STATE.currentIndex = -1;
+            }
+            STATE.isPlaylistHome = true;
+            savePlaylist(); renderListUI();
+        }]);
+        items.forEach(([icon, label, action]) => {
+            const item = targetDoc.createElement('div');
+            item.className = 'fm-pop-item fm-playlist-menu-item';
+            item.innerHTML = `<i class="${icon}"></i><span>${label}</span>`;
+            item.onclick = () => { UI.popMenu.classList.remove('show'); action(); };
+            UI.popMenu.appendChild(item);
+        });
+        const rect = e.currentTarget?.getBoundingClientRect?.() || e.target.getBoundingClientRect();
+        const estimatedMenuHeight = items.length * 34 + 10;
+        const menuWidth = 150;
+        let top = rect.bottom + 4;
+        if (top + estimatedMenuHeight > targetWin.innerHeight - 10) top = rect.top - estimatedMenuHeight - 4;
+        let left = rect.right - menuWidth;
+        left = Math.max(10, Math.min(left, targetWin.innerWidth - menuWidth - 10));
+        top = Math.max(10, Math.min(top, targetWin.innerHeight - estimatedMenuHeight - 10));
+        UI.popMenu.style.top = `${top}px`;
+        UI.popMenu.style.left = `${left}px`;
+        UI.popMenu.classList.add('show');
+    }
+
+    // 事件发生在 Shadow DOM 内，监听 wrapper 比监听宿主 document 更可靠。
+    wrapper.addEventListener('click', (e) => {
+        if (!e.target.closest('#fm-pop-menu') && !e.target.closest('.fm-icon-btn')) {
+            UI.popMenu.classList.remove('show');
+        }
+    });
+
+    // 修复：下拉菜单越界适配
+    function showAddMenu(e, track, actionType = 'add', sourceIndex = -1, sourcePlaylistId = null) {
+        e.stopPropagation();
+        
+        const availablePlaylists = actionType === 'move' 
+            ? STATE.playlists.filter(p => p.id !== sourcePlaylistId)
+            : STATE.playlists;
+
+        if (availablePlaylists.length === 0) {
+            API.toast("没有其他歌单可供移动");
+            return;
+        }
+
+        if (availablePlaylists.length === 1 && actionType === 'add') {
+            addTrackToPlaylist(track, availablePlaylists[0].id);
+            return;
+        }
+
+        UI.popMenu.innerHTML = '';
+        availablePlaylists.forEach(p => {
+            const item = targetDoc.createElement('div');
+            item.className = 'fm-pop-item';
+            item.textContent = `${actionType === 'move' ? '移动' : '添加'}至: ${p.name}`;
+            item.onclick = () => {
+                if (actionType === 'move') {
+                    moveTrackToPlaylist(track, sourceIndex, sourcePlaylistId, p.id);
+                } else {
+                    addTrackToPlaylist(track, p.id);
+                }
+                UI.popMenu.classList.remove('show');
+            };
+            UI.popMenu.appendChild(item);
+        });
+
+        // 智能定位：使用 fixed 定位，完全相对于视口计算，摆脱面板边界束缚
+        const anchor = e.target.closest?.('.fm-icon-btn, button') || e.currentTarget;
+        const rect = anchor.getBoundingClientRect();
+        
+        // 预估菜单高度（每项约32px，最大200px）
+        const estimatedMenuHeight = Math.min(availablePlaylists.length * 32 + 10, 200);
+        
+        let top;
+        // 如果点击位置距离视口底部不足以放下菜单，则向上展开
+        if (rect.bottom + estimatedMenuHeight > targetWin.innerHeight - 10) {
+            top = rect.top - estimatedMenuHeight;
+        } else {
+            top = rect.bottom;
+        }
+        
+        const menuWidth = 140;
+        let left = rect.left - 100;
+        left = Math.max(10, Math.min(left, targetWin.innerWidth - menuWidth - 10));
+        top = Math.max(10, Math.min(top, targetWin.innerHeight - estimatedMenuHeight - 10));
+        
+        UI.popMenu.style.top = `${top}px`;
+        UI.popMenu.style.left = `${left}px`;
+        UI.popMenu.classList.add('show');
+    }
+
+    function addTrackToPlaylist(track, playlistId) {
+        const targetList = STATE.playlists.find(p => p.id === playlistId);
+        if (targetList) {
+            if (targetList.tracks.length >= CONFIG.MAX_TRACKS_PER_LIST) {
+                API.toast(`歌单 [${targetList.name}] 已达到上限 (${CONFIG.MAX_TRACKS_PER_LIST}首)，无法继续添加`);
+                return;
+            }
+            const exists = targetList.tracks.some(t => trackDedupeKey(t) === trackDedupeKey(track));
+            if (exists) {
+                API.toast(`《${track.title}》已经在 [${targetList.name}] 里了，没有重复添加`);
+                STATE.isShowingSearch = false;
+                renderListUI();
+                return;
+            }
+            targetList.tracks.push(track);
+            savePlaylist();
+            API.toast(`已添加至 [${targetList.name}]`);
+            STATE.isShowingSearch = false;
+            STATE.currentPlaylistId = playlistId;
+            STATE.isPlaylistHome = false;
+            renderListUI();
+            
+            if (STATE.currentIndex === -1 && STATE.playingPlaylistId === playlistId) {
+                playTrack(targetList.tracks.length - 1, playlistId);
+            }
+        }
+    }
+
+    function moveTrackToPlaylist(track, sourceIndex, sourcePlaylistId, targetPlaylistId) {
+        const sourceList = STATE.playlists.find(p => p.id === sourcePlaylistId);
+        const targetList = STATE.playlists.find(p => p.id === targetPlaylistId);
+        
+        if (sourceList && targetList && sourceIndex >= 0) {
+            if (targetList.tracks.length >= CONFIG.MAX_TRACKS_PER_LIST) {
+                API.toast(`目标歌单已达到上限 (${CONFIG.MAX_TRACKS_PER_LIST}首)，无法移动`);
+                return;
+            }
+            sourceList.tracks.splice(sourceIndex, 1);
+            
+            if (STATE.playingPlaylistId === sourcePlaylistId) {
+                if (sourceIndex === STATE.currentIndex) {
+                    audio.pause();
+                    if (sourceList.tracks.length > 0) playTrack(sourceIndex % sourceList.tracks.length, sourcePlaylistId);
+                    else {
+                        STATE.currentIndex = -1;
+                        UI.title.textContent = '播放器测试';
+                        UI.artist.textContent = 'Awaiting Connection...';
+                        UI.outLyrics.innerHTML = '';
+                    }
+                } else if (sourceIndex < STATE.currentIndex) {
+                    STATE.currentIndex--;
+                }
+            }
+
+            targetList.tracks.push(track);
+            savePlaylist();
+            API.toast(`已移动至 [${targetList.name}]`);
+            renderListUI();
+        }
+    }
+
+    function renderListUI() {
+        renderTabs();
+        UI.playlistEl.innerHTML = '';
+
+        if (STATE.isPlaylistHome && !STATE.isShowingSearch) {
+            return;
+        }
+        
+        if (STATE.isShowingSearch) {
+            const header = targetDoc.createElement('div');
+            header.className = 'fm-search-header';
+            header.innerHTML = `<span>搜索结果 (${STATE.searchResults.length})</span><span class="fm-back-list">返回列表</span>`;
+            header.querySelector('.fm-back-list').onclick = () => {
+                STATE.isShowingSearch = false;
+                STATE.isPlaylistHome = true;
+                renderListUI();
+            };
+            UI.playlistEl.appendChild(header);
+
+            if (STATE.searchResults.length === 0) {
+                UI.playlistEl.innerHTML += '<div style="padding:16px;text-align:center;color:var(--fm-text-sub);font-size:12px;">未找到相关歌曲</div>';
+                return;
+            }
+
+            STATE.searchResults.forEach((track, index) => {
+                const item = targetDoc.createElement('div');
+                item.className = 'fm-item';
+                item.innerHTML = `
+                    <div class="fm-item-info">
+                        <span class="fm-item-title">${escapeHTML(track.title)}</span>
+                        <span class="fm-item-artist">${escapeHTML(track.artist)} · ${track.source === 'netease' ? '网易云' : '其他'}</span>
+                    </div>
+                    <div class="fm-item-actions">
+                        <button class="fm-icon-btn" title="添加至歌单"><i class="fas fa-plus"></i></button>
+                    </div>
+                `;
+                item.querySelector('.fm-icon-btn').onclick = (e) => showAddMenu(e, track, 'add');
+                UI.playlistEl.appendChild(item);
+            });
+        } else {
+            const currentListObj = getCurrentPlaylist();
+            const currentTracks = currentListObj.tracks;
+            UI.playlistEl.style.setProperty('--playlist-color', getPlaylistColor(currentListObj));
+
+            if (currentTracks.length === 0) {
+                UI.playlistEl.innerHTML = '<div style="padding:16px;text-align:center;color:var(--fm-text-sub);font-size:12px;">列表为空，请导入或搜索</div>';
+                return;
+            }
+
+            let listToRender = currentTracks.map((track, index) => ({ track, index }));
+            if (STATE.currentInputMode === 'search_local' && STATE.localSearchKeyword) {
+                listToRender = listToRender.filter(item => 
+                    item.track.title.toLowerCase().includes(STATE.localSearchKeyword) || 
+                    item.track.artist.toLowerCase().includes(STATE.localSearchKeyword)
+                );
+            }
+
+            const header = targetDoc.createElement('div');
+            header.className = 'fm-search-header';
+            
+            if (STATE.currentInputMode === 'search_local' && STATE.localSearchKeyword) {
+                header.innerHTML = `<span>搜索结果 (${listToRender.length})</span><span class="fm-clear-list">清除搜索</span>`;
+                header.querySelector('.fm-clear-list').onclick = () => {
+                    STATE.localSearchKeyword = '';
+                    UI.input.value = '';
+                    renderListUI();
+                };
+            } else {
+                header.innerHTML = `<span>${currentListObj.name} (${currentTracks.length})</span><span class="fm-clear-list">清空列表</span>`;
+                header.querySelector('.fm-clear-list').onclick = () => {
+                    if (confirm(`确定清空 [${currentListObj.name}] 吗？`)) {
+                        currentListObj.tracks = [];
+                        savePlaylist();
+                        if (STATE.playingPlaylistId === currentListObj.id) {
+                            audio.pause();
+                            STATE.currentIndex = -1;
+                            UI.title.textContent = '播放器测试';
+                            UI.artist.textContent = 'Awaiting Connection...';
+                            UI.outLyrics.innerHTML = '';
+                        }
+                        renderListUI();
+                        API.toast("列表已清空");
+                    }
+                };
+            }
+            UI.playlistEl.appendChild(header);
+
+            if (listToRender.length === 0) {
+                UI.playlistEl.innerHTML += '<div style="padding:16px;text-align:center;color:var(--fm-text-sub);font-size:12px;">未找到匹配的歌曲</div>';
+                return;
+            }
+
+            listToRender.forEach(({ track, index }) => {
+                const isActive = (STATE.playingPlaylistId === currentListObj.id && index === STATE.currentIndex);
+                const item = targetDoc.createElement('div');
+                item.className = `fm-item ${isActive ? 'active' : ''}`;
+                item.innerHTML = `
+                    <div class="fm-item-info">
+                        <span class="fm-item-title">${escapeHTML(track.title)}</span>
+                        <span class="fm-item-artist">${escapeHTML(track.artist)}</span>
+                    </div>
+                    <div class="fm-item-actions">
+                        <button class="fm-icon-btn move" title="移动至其他歌单"><i class="fas fa-exchange-alt"></i></button>
+                        <button class="fm-icon-btn pinned ${index === 0 ? 'pinned' : ''}" title="置顶"><i class="fas fa-thumbtack"></i></button>
+                        <button class="fm-icon-btn del" title="移除"><i class="fas fa-trash-alt"></i></button>
+                    </div>
+                `;
+                
+                item.addEventListener('click', (e) => {
+                    if (e.target.closest('.del')) {
+                        e.stopPropagation(); removeTrack(index, currentListObj.id);
+                    } else if (e.target.closest('.pinned')) {
+                        e.stopPropagation(); pinTrack(index, currentListObj.id);
+                    } else if (e.target.closest('.move')) {
+                        e.stopPropagation(); showAddMenu(e, track, 'move', index, currentListObj.id);
+                    } else {
+                        playTrack(index, currentListObj.id);
+                    }
+                });
+                UI.playlistEl.appendChild(item);
             });
         }
+    }
+
+    function pinTrack(index, playlistId) {
+        const targetList = STATE.playlists.find(p => p.id === playlistId);
+        if (!targetList || index <= 0 || index >= targetList.tracks.length) return;
+        
+        const [track] = targetList.tracks.splice(index, 1);
+        targetList.tracks.unshift(track);
+        
+        if (STATE.playingPlaylistId === playlistId) {
+            if (STATE.currentIndex === index) STATE.currentIndex = 0;
+            else if (STATE.currentIndex >= 0 && STATE.currentIndex < index) STATE.currentIndex += 1;
+        }
+        savePlaylist();
+        renderListUI();
+    }
+
+    function removeTrack(index, playlistId) {
+        const targetList = STATE.playlists.find(p => p.id === playlistId);
+        if (!targetList) return;
+
+        targetList.tracks.splice(index, 1);
+        
+        if (STATE.playingPlaylistId === playlistId) {
+            if (index === STATE.currentIndex) {
+                audio.pause();
+                if (targetList.tracks.length > 0) playTrack(index % targetList.tracks.length, playlistId);
+                else {
+                    STATE.currentIndex = -1;
+                    UI.title.textContent = '播放器测试';
+                    UI.artist.textContent = 'Awaiting Connection...';
+                    UI.outLyrics.innerHTML = '';
+                }
+            } else if (index < STATE.currentIndex) {
+                STATE.currentIndex--;
+            }
+        }
+        savePlaylist();
+        renderListUI();
+    }
+
+    // 播放核心逻辑
+    async function playTrack(index, playlistId = STATE.playingPlaylistId, isRetry = false) {
+        const targetList = STATE.playlists.find(p => p.id === playlistId);
+        if (!targetList || index < 0 || index >= targetList.tracks.length) return;
+        
+        STATE.playingPlaylistId = playlistId;
+        STATE.currentIndex = index;
+        const requestId = ++STATE.playRequestId;
+        const track = targetList.tracks[index];
+
+        if (!isRetry) track.__retriedOnError = false;
+        
+        UI.title.textContent = track.title;
+        UI.artist.textContent = track.artist;
+        renderListUI();
+
+        audio.pause(); audio.src = '';
+        STATE.lyricsData = []; UI.outLyrics.innerHTML = ''; UI.outLyricsScrollList.innerHTML = ''; STATE.lastActiveLrcIndex = -1;
+        if (lrcRafId) cancelAnimationFrame(lrcRafId);
+        updateProgressUI(0, 0);
+
+        if (!track.url) {
+            UI.title.textContent = "解析音源中...";
+            let searchRes = await API.fillTrackInfo(track.title, track.artist);
+            if (!searchRes && track.rawId) searchRes = { id: track.rawId, source: track.source || 'netease' };
+            
+            if (searchRes) {
+                track.source = searchRes.source || track.source;
+                track.id = searchRes.id;
+                track.lyricId = searchRes.lyric_id || searchRes.id;
+                track.url = await API.getUrl(track.source, track.id);
+            }
+        }
+
+        if (STATE.playRequestId !== requestId || STATE.playingPlaylistId !== playlistId || STATE.currentIndex !== index) return;
+
+        if (track.url) {
+            UI.title.textContent = track.title;
+            audio.__playToken = requestId;
+            audio.src = withCacheBust(track.url);
+            audio.play().catch(e => console.warn("Auto-play prevented", e));
+            
+            if (track.lrcUrl || track.lyricId || track.rawId) {
+                let lyricSource = track.source;
+                let lyricId = track.lyricId || track.rawId;
+                let lrcData = null;
+
+                if (track.lrcUrl) {
+                    lrcData = await API.getLyricByUrl(track.lrcUrl);
+                    if (STATE.playRequestId !== requestId || STATE.playingPlaylistId !== playlistId || STATE.currentIndex !== index) return;
+                }
+
+                if (!lrcData || lrcData.__error || !lrcData.lyric) {
+                    if (lyricId) {
+                        lrcData = await API.getLyric(lyricSource, lyricId);
+                        if (STATE.playRequestId !== requestId || STATE.playingPlaylistId !== playlistId || STATE.currentIndex !== index) return;
+                    }
+                }
+
+                if (!lrcData || lrcData.__error || !lrcData.lyric) {
+                    const searchRes = await API.fillTrackInfo(track.title, track.artist);
+                    if (STATE.playRequestId !== requestId || STATE.playingPlaylistId !== playlistId || STATE.currentIndex !== index) return;
+                    if (searchRes) {
+                        lyricSource = searchRes.source || lyricSource;
+                        lyricId = searchRes.lyric_id || searchRes.id;
+                        lrcData = await API.getLyric(lyricSource, lyricId);
+                        if (STATE.playRequestId !== requestId || STATE.playingPlaylistId !== playlistId || STATE.currentIndex !== index) return;
+                    }
+                }
+
+                if (lrcData && !lrcData.__error && lrcData.lyric) {
+                    if (lyricId) track.lyricId = lyricId;
+                    parseLyric(lrcData.lyric, lrcData.tlyric);
+                    buildScrollLyricsDom(); 
+                    if (lrcRafId) cancelAnimationFrame(lrcRafId);
+                    if (STATE.isLyricsVisible && !audio.paused) updateLyrics();
+                }
+            }
+        } else {
+            UI.title.textContent = "音源不可用，跳过";
+            API.toast(`[${track.title}] 音源解析失败，已跳过`);
+            setTimeout(() => playNext(), 2000);
+        }
+    }
+
+    function playNext() {
+        const playingList = getPlayingPlaylist().tracks;
+        if (playingList.length === 0) return;
+        let nextIdx = STATE.currentIndex;
+        if (STATE.playMode === 'shuffle') nextIdx = Math.floor(Math.random() * playingList.length);
+        else nextIdx = (STATE.currentIndex + 1) % playingList.length;
+        playTrack(nextIdx, STATE.playingPlaylistId);
+    }
+
+    function playPrev() {
+        const playingList = getPlayingPlaylist().tracks;
+        if (playingList.length === 0) return;
+        let prevIdx = STATE.currentIndex;
+        if (STATE.playMode === 'shuffle') prevIdx = Math.floor(Math.random() * playingList.length);
+        else prevIdx = (STATE.currentIndex - 1 + playingList.length) % playingList.length;
+        playTrack(prevIdx, STATE.playingPlaylistId);
+    }
+
+    // 歌词解析
+    function parseLyric(lrcStr, tlrcStr) {
+        STATE.lyricsData = [];
+        const timeExp = /\[(\d{2,}):(\d{2})(?:\.(\d{2,3}))?\]/g;
+        const parse = (str) => {
+            const map = new Map();
+            if (!str) return map;
+            const lines = str.split('\n');
+            for (let line of lines) {
+                line = line.trim();
+                if (!line) continue;
+
+                const timestamps = [...line.matchAll(timeExp)];
+                const txt = line.replace(timeExp, '').trim();
+                if (!txt || timestamps.length === 0) continue;
+
+                timestamps.forEach(result => {
+                    const min = parseInt(result[1], 10);
+                    const sec = parseInt(result[2], 10);
+                    const ms = result[3] ? parseInt(result[3].padEnd(3, '0'), 10) : 0;
+                    map.set((min * 60 + sec + ms / 1000).toFixed(3), txt);
+                });
+                timeExp.lastIndex = 0;
+            }
+            return map;
+        };
+
+        const lrcMap = parse(lrcStr);
+        const tlrcMap = parse(tlrcStr);
+        const times = Array.from(lrcMap.keys()).sort((a, b) => parseFloat(a) - parseFloat(b));
+        times.forEach(t => {
+            STATE.lyricsData.push({ time: parseFloat(t), text: lrcMap.get(t), trans: tlrcMap.get(t) || '' });
+        });
+    }
+
+    function buildScrollLyricsDom() {
+        UI.outLyricsScrollList.innerHTML = '';
+        STATE.lyricsData.forEach((line) => {
+            const div = targetDoc.createElement('div');
+            div.className = 'fm-lrc-scroll-line';
+            div.textContent = line.text;
+            UI.outLyricsScrollList.appendChild(div);
+        });
+        UI.outLyricsScrollList.style.transform = 'translateY(0px)';
+    }
+
+    function renderScrollActiveLine(activeIdx) {
+        const lineEls = UI.outLyricsScrollList.children;
+        if (lineEls.length === 0) return;
+        for (let i = 0; i < lineEls.length; i++) {
+            lineEls[i].classList.remove('current', 'near');
+            if (i === activeIdx) lineEls[i].classList.add('current');
+            else if (Math.abs(i - activeIdx) === 1) lineEls[i].classList.add('near');
+        }
+        const activeLine = lineEls[activeIdx];
+        if (!activeLine) return;
+        const containerHeight = UI.outLyricsScroll.clientHeight;
+        const targetCenter = activeLine.offsetTop + activeLine.offsetHeight / 2;
+        const offset = containerHeight / 2 - targetCenter;
+        UI.outLyricsScrollList.style.transform = `translateY(${offset}px)`;
+    }
+
+    // 修复：歌词动画优化，使用更平滑的延迟
+    function updateLyrics() {
+        if (!STATE.isLyricsVisible || STATE.lyricsData.length === 0 || audio.paused) return;
+        const ct = audio.currentTime;
+        const isFallMode = savedSettings.lrcMode === 'fall';
+        
+        // 随机掉落模式下，提前 0.8 秒触发下一句，实现交叠效果
+        const effectiveTime = ct + (isFallMode ? 0.8 : 0);
+        
+        let activeIdx = -1;
+        for (let i = STATE.lyricsData.length - 1; i >= 0; i--) {
+            if (effectiveTime >= STATE.lyricsData[i].time) { activeIdx = i; break; }
+        }
+
+        if (activeIdx !== -1 && activeIdx !== STATE.lastActiveLrcIndex) {
+            STATE.lastActiveLrcIndex = activeIdx;
+
+            if (savedSettings.lrcMode === 'scroll') {
+                renderScrollActiveLine(activeIdx);
+            } else if (savedSettings.lrcMode === 'plain') {
+                const line = STATE.lyricsData[activeIdx];
+                UI.outLyrics.replaceChildren();
+
+                const lineEl = targetDoc.createElement('div');
+                lineEl.className = 'fm-lrc-plain-line';
+                lineEl.textContent = line.text || '';
+                UI.outLyrics.appendChild(lineEl);
+
+                if (line.trans) {
+                    const transEl = targetDoc.createElement('div');
+                    transEl.className = 'fm-lrc-trans fm-lrc-plain-trans';
+                    transEl.textContent = line.trans;
+                    UI.outLyrics.appendChild(transEl);
+                }
+            } else {
+                const line = STATE.lyricsData[activeIdx];
+                
+                let duration = 4.0;
+                if (activeIdx < STATE.lyricsData.length - 1) {
+                    duration = STATE.lyricsData[activeIdx + 1].time - line.time;
+                }
+                
+                const chars = line.text.split('');
+                const validCharsCount = line.text.replace(/\s/g, '').length || 1;
+                const isFallMode = savedSettings.lrcMode === 'fall';
+                
+                let html = `<div class="fm-lrc-line">`;
+                
+                if (isFallMode) {
+                    // 随机掉落模式逻辑
+                    let validIndices = [];
+                    chars.forEach((c, i) => { if (c !== ' ') validIndices.push(i); });
+                    
+                    for (let i = validIndices.length - 1; i > 0; i--) {
+                        const j = Math.floor(Math.random() * (i + 1));
+                        [validIndices[i], validIndices[j]] = [validIndices[j], validIndices[i]];
+                    }
+                    // 保留随机掉落的随机性，但强制这一句的最后一个非空白字符最后掉落。
+                    if (validIndices.length > 1) {
+                        const lastIndex = validIndices.length - 1;
+                        const finalCharIndex = validIndices.findIndex(index => index === chars.length - 1);
+                        if (finalCharIndex !== -1) {
+                            [validIndices[finalCharIndex], validIndices[lastIndex]] = [validIndices[lastIndex], validIndices[finalCharIndex]];
+                        }
+                    }
+                    
+                    const delayOrderMap = new Map();
+                    validIndices.forEach((originalIndex, randomOrder) => {
+                        delayOrderMap.set(originalIndex, randomOrder);
+                    });
+
+                    // 严格限制时间：确保 (最大延迟 + 动画时长) < 句子总时长
+                    // 基础动画时长为 0.8s，预留 10% 的缓冲时间
+                    const animDuration = 0.8;
+                    const safeDuration = duration * 0.9;
+                    
+                    let maxTotalDelay;
+                    let speedScale = 1.0; // 用于在极短句子中加速动画本身
+
+                    if (safeDuration > animDuration + 0.5) {
+                        // 时间充裕，最大延迟限制在 1.5s 内
+                        maxTotalDelay = Math.min(safeDuration - animDuration, 1.5);
+                    } else {
+                        // 时间紧迫，压缩动画和延迟
+                        maxTotalDelay = safeDuration * 0.4;
+                        speedScale = (safeDuration * 0.6) / animDuration;
+                    }
+
+                    const delayStep = maxTotalDelay / Math.max(1, validCharsCount - 1);
+
+                    chars.forEach((c, i) => {
+                        if (c === ' ') { html += ' '; return; }
+                        
+                        const randomOrder = delayOrderMap.get(i);
+                        const delay = randomOrder * delayStep;
+                        const highlightClass = ['你', '我', '爱'].includes(c) ? ' lrc-highlight' : '';
+                        
+                        // 如果时间紧迫，通过内联样式覆盖 animation-duration 加速动画
+                        const animStyle = speedScale < 1.0 
+                            ? `animation-duration: ${animDuration * speedScale}s; animation-delay: ${delay}s;`
+                            : `animation-delay: ${delay}s;`;
+                            
+                        html += `<span class="lrc-anim-fall${highlightClass}" style="${animStyle}">${c}</span>`;
+                    });
+                } else {
+                    // 原有的逐句弹出模式逻辑
+                    const charDelay = Math.min(0.15, Math.max(0.04, (duration * 0.4) / validCharsCount));
+                    let charIndex = 0;
+                    chars.forEach((c) => {
+                        if (c === ' ') { html += ' '; return; }
+                        html += `<span class="lrc-anim-char" style="animation-delay:${charIndex * charDelay}s">${c}</span>`;
+                        charIndex++;
+                    });
+                }
+                
+                html += `</div>`;
+                
+                if (line.trans) {
+                    // 随机掉落模式下，翻译固定较短延迟，且使用专用的无位移渐现动画
+                    const transDelay = isFallMode ? 0.3 : Math.min(duration * 0.3, validCharsCount * 0.1 + 0.2);
+                    const animClass = isFallMode ? 'lrc-trans-fade' : 'lrc-anim-char';
+                    html += `<div class="fm-lrc-trans ${animClass}" style="animation-delay:${transDelay}s">${line.trans}</div>`;
+                }
+                
+                // 处理旧歌词的退场动画（原地雾化消散）
+                if (isFallMode) {
+                    const oldLines = Array.from(UI.outLyrics.children);
+                    oldLines.forEach(el => {
+                        if (!el.classList.contains('exiting')) {
+                            el.classList.add('exiting');
+                            // 锁定位置，脱离文档流，防止影响新歌词排版
+                            el.style.position = 'absolute';
+                            el.style.bottom = '0';
+                            el.style.left = '50%';
+                            el.style.transform = 'translateX(-50%)';
+                            el.style.width = 'max-content';
+                            el.style.pointerEvents = 'none';
+                            
+                            // 给整个旧行应用原地模糊消散动画，使其与新歌词的掉落自然交叠
+                            el.style.animation = 'lrc-fade-out 0.8s ease-out forwards';
+                            
+                            // 移除内部字符可能残留的动画，防止冲突
+                            const spans = el.querySelectorAll('span, div');
+                            spans.forEach(span => {
+                                span.style.animation = 'none';
+                            });
+                            
+                            setTimeout(() => { if (el.parentNode) el.remove(); }, 800);
+                        }
+                    });
+                    
+                    // 将新歌词包裹在一个容器中追加，而不是直接覆写 innerHTML
+                    const newWrapper = targetDoc.createElement('div');
+                    newWrapper.className = 'fm-lrc-line-wrapper';
+                    newWrapper.style.display = 'flex';
+                    newWrapper.style.flexDirection = 'column';
+                    newWrapper.style.alignItems = 'center';
+                    newWrapper.style.gap = '4px';
+                    newWrapper.innerHTML = html;
+                    UI.outLyrics.appendChild(newWrapper);
+                } else {
+                    UI.outLyrics.innerHTML = html;
+                }
+            }
+        }
+        // 歌词只需要在播放进度更新时检查当前行，不再用 requestAnimationFrame 每帧扫描。
+        // 这样可以避免歌词开启后占满主线程，尤其适合手机端。
+        lrcRafId = null;
+    }
+
+    // ================= 事件绑定 =================
+    
+    UI.closeBtn.onclick = togglePanel;
+    
+    UI.playBtn.onclick = () => {
+        const playingList = getPlayingPlaylist().tracks;
+        if (playingList.length === 0) return;
+        if (audio.paused) {
+            if (STATE.currentIndex === -1) playTrack(0, STATE.playingPlaylistId);
+            else audio.play();
+        } else audio.pause();
+    };
+
+    UI.prevBtn.onclick = playPrev;
+    UI.nextBtn.onclick = playNext;
+
+    UI.modeBtn.onclick = () => {
+        const modes = ['repeat_all', 'repeat_one', 'shuffle'];
+        const icons = ['fa-retweet', 'fa-redo-alt', 'fa-random'];
+        let idx = (modes.indexOf(STATE.playMode) + 1) % modes.length;
+        STATE.playMode = modes[idx];
+        UI.modeBtn.innerHTML = `<i class="fas ${icons[idx]}"></i>`;
+    };
+
+    function getActiveLyricsEl() {
+        return savedSettings.lrcMode === 'scroll' ? UI.outLyricsScroll : UI.outLyrics;
+    }
+    function syncLyricsVisibility() {
+        const active = getActiveLyricsEl();
+        const inactive = (active === UI.outLyrics) ? UI.outLyricsScroll : UI.outLyrics;
+        inactive.classList.remove('show');
+        active.classList.toggle('show', STATE.isLyricsVisible);
+    }
+
+    UI.lrcToggleBtn.onclick = () => {
+        STATE.isLyricsVisible = !STATE.isLyricsVisible;
+        UI.lrcToggleBtn.classList.toggle('active-state', STATE.isLyricsVisible);
+        syncLyricsVisibility();
+        if (!STATE.isLyricsVisible) {
+            UI.outLyrics.innerHTML = '';
+            UI.outLyricsScrollList.innerHTML = '';
+        } else if (!audio.paused) {
+            STATE.lastActiveLrcIndex = -1;
+            updateLyrics();
+        }
+    };
+
+    UI.lrcSettingsBtn.onclick = () => {
+        UI.lrcSettingsPanel.classList.toggle('open');
+    };
+
+    UI.lrcModePlainBtn.onclick = () => {
+        if (savedSettings.lrcMode === 'plain') return;
+        savedSettings.lrcMode = 'plain';
+        updateLrcModeBtns();
+        STATE.lastActiveLrcIndex = -1;
+        if (lrcRafId) { cancelAnimationFrame(lrcRafId); lrcRafId = null; }
+        syncLyricsVisibility();
+        if (STATE.isLyricsVisible && !audio.paused) updateLyrics();
+        applySettings();
+    };
+
+    UI.lrcModePopupBtn.onclick = () => {
+        if (savedSettings.lrcMode === 'popup') return;
+        savedSettings.lrcMode = 'popup';
+        updateLrcModeBtns();
+        STATE.lastActiveLrcIndex = -1;
+        syncLyricsVisibility();
+        if (STATE.isLyricsVisible && !audio.paused) updateLyrics();
+        applySettings();
+    };
+    UI.lrcModeScrollBtn.onclick = () => {
+        if (savedSettings.lrcMode === 'scroll') return;
+        savedSettings.lrcMode = 'scroll';
+        updateLrcModeBtns();
+        STATE.lastActiveLrcIndex = -1;
+        syncLyricsVisibility();
+        if (STATE.lyricsData.length > 0) buildScrollLyricsDom();
+        if (STATE.isLyricsVisible && !audio.paused) updateLyrics();
+        applySettings();
+    };
+    UI.lrcModeFallBtn.onclick = () => {
+        if (savedSettings.lrcMode === 'fall') return;
+        savedSettings.lrcMode = 'fall';
+        updateLrcModeBtns();
+        STATE.lastActiveLrcIndex = -1;
+        syncLyricsVisibility();
+        if (STATE.isLyricsVisible && !audio.paused) updateLyrics();
+        applySettings();
+    };
+
+    UI.lrcFontSlider.oninput = (e) => {
+        savedSettings.lrcFont = e.target.value;
+        applySettings(false);
+        scheduleSettingsSave();
+        if (savedSettings.lrcMode === 'scroll' && STATE.lastActiveLrcIndex !== -1) renderScrollActiveLine(STATE.lastActiveLrcIndex);
+    };
+    UI.lrcBottomSlider.oninput = (e) => {
+        savedSettings.lrcBottom = e.target.value;
+        applySettings(false);
+        scheduleSettingsSave();
+    };
+
+    UI.sourceSelect.onchange = (e) => {
+        STATE.currentInputMode = e.target.value;
+        if (STATE.currentInputMode === 'search') {
+            UI.input.placeholder = "输入歌曲名或歌手名";
+            UI.addBtn.textContent = "搜索";
+        } else if (STATE.currentInputMode === 'search_local') {
+            UI.input.placeholder = "在播放列表中查找";
+            UI.addBtn.textContent = "查找";
+        } else {
+            UI.input.placeholder = "输入歌单ID或链接";
+            UI.addBtn.textContent = "导入";
+        }
+        STATE.localSearchKeyword = '';
+        renderListUI();
+    };
+
+    UI.addBtn.onclick = async () => {
+        const val = UI.input.value.trim();
+        if (!val && STATE.currentInputMode !== 'search_local') return;
+        
+        const originalText = UI.addBtn.textContent;
+        UI.addBtn.textContent = '...';
+        UI.addBtn.disabled = true;
+
+        if (STATE.currentInputMode === 'search_local') {
+            STATE.localSearchKeyword = val.toLowerCase();
+            renderListUI();
+            UI.addBtn.textContent = originalText;
+            UI.addBtn.disabled = false;
+            return;
+        }
+
+        if (STATE.currentInputMode === 'search') {
+            const results = await API.searchTrack(val);
+            if (results.length > 0) {
+                STATE.searchResults = results;
+                STATE.isShowingSearch = true;
+                renderListUI();
+                API.toast(`搜索到 ${results.length} 首相关歌曲`);
+            } else {
+                API.toast("未搜索到结果，请换个关键词");
+            }
+        } else {
+            const tracks = await API.parsePlaylist(val, STATE.currentInputMode);
+            if (tracks.length > 0) {
+                const currentListObj = getCurrentPlaylist();
+                
+                // 防卡死：导入时检查容量
+                if (currentListObj.tracks.length >= CONFIG.MAX_TRACKS_PER_LIST) {
+                    API.toast(`歌单已达到上限 (${CONFIG.MAX_TRACKS_PER_LIST}首)，无法继续导入`);
+                    UI.addBtn.textContent = originalText;
+                    UI.addBtn.disabled = false;
+                    return;
+                }
+
+                const existingKeys = new Set(currentListObj.tracks.map(trackDedupeKey));
+                let newTracks = tracks.filter(t => !existingKeys.has(trackDedupeKey(t)));
+                const dupeCount = tracks.length - newTracks.length;
+                
+                // 截断超出的部分
+                let limitCount = 0;
+                if (currentListObj.tracks.length + newTracks.length > CONFIG.MAX_TRACKS_PER_LIST) {
+                    const allowed = CONFIG.MAX_TRACKS_PER_LIST - currentListObj.tracks.length;
+                    limitCount = newTracks.length - allowed;
+                    newTracks = newTracks.slice(0, allowed);
+                }
+
+                currentListObj.tracks.push(...newTracks);
+                savePlaylist();
+                STATE.isShowingSearch = false;
+                renderListUI();
+                UI.input.value = '';
+                
+                let msg = `成功导入 ${newTracks.length} 首歌曲至 [${currentListObj.name}]`;
+                if (dupeCount > 0) msg += `（跳过 ${dupeCount} 首重复）`;
+                if (limitCount > 0) msg += `（因容量限制，截断了 ${limitCount} 首）`;
+                API.toast(msg);
+                
+                if (STATE.currentIndex === -1 && STATE.playingPlaylistId === currentListObj.id) {
+                    playTrack(0, currentListObj.id);
+                }
+            } else {
+                API.toast("歌单解析失败或为空，请检查ID权限");
+            }
+        }
+        
+        UI.addBtn.textContent = originalText;
+        UI.addBtn.disabled = false;
+    };
+
+    UI.input.onkeypress = (e) => {
+        if (e.key === 'Enter') UI.addBtn.click();
+    };
+    UI.input.oninput = () => {
+        if (STATE.currentInputMode === 'search_local') {
+            STATE.localSearchKeyword = UI.input.value.trim().toLowerCase();
+            renderListUI();
+        }
+    };
+
+    const THEME_DEFAULT_COLORS = {
+        adaptive: '', // 自适应主题不强制设色，跟随宿主环境
+        light: '#000000',
+        dark: '#ffffff',
+        glass: '#ffffff'
+    };
+
+    UI.themeDots.forEach(dot => {
+        dot.onclick = () => {
+            UI.themeDots.forEach(d => d.classList.remove('active'));
+            dot.classList.add('active');
+            STATE.currentTheme = dot.dataset.theme;
+            savedSettings.theme = STATE.currentTheme;
+            UI.wrapper.className = `theme-${STATE.currentTheme}`;
+            
+            // 切换主题时，恢复该主题的默认强调色
+            const defColor = THEME_DEFAULT_COLORS[STATE.currentTheme];
+            if (defColor) {
+                savedSettings.customColor = defColor;
+                UI.colorPicker.value = defColor;
+            }
+            applySettings();
+        };
+    });
+
+    UI.shapeBtn.onclick = () => {
+        savedSettings.shapeStyle = savedSettings.shapeStyle === 'square' ? 'round' : 'square';
+        applySettings();
+    };
+
+    let settingsSaveTimer = null;
+    const saveSettings = () => {
+        try {
+            localStorage.setItem(CONFIG.SETTINGS_KEY, JSON.stringify(savedSettings));
+        } catch (e) {
+            if (e.name === 'QuotaExceededError' || e.name === 'NS_ERROR_DOM_QUOTA_REACHED') {
+                API.toast("保存失败：图片体积过大，超出了浏览器本地存储限制。请清除壁纸或装修小图后重试。");
+                savedSettings.nowCoverImage = '';
+                if (UI.nowCover) {
+                    UI.nowCover.replaceChildren();
+                    const icon = targetWin.document.createElement('i');
+                    icon.className = 'fas fa-compact-disc';
+                    UI.nowCover.appendChild(icon);
+                }
+                if (UI.decorationPreviewCover) {
+                    UI.decorationPreviewCover.replaceChildren();
+                    const icon = targetWin.document.createElement('i');
+                    icon.className = 'fas fa-compact-disc';
+                    UI.decorationPreviewCover.appendChild(icon);
+                }
+                savedSettings.bgImage = '';
+                UI.wrapper.style.setProperty('--fm-bg-image', 'none');
+            }
+        }
+    };
+    const scheduleSettingsSave = () => {
+        clearTimeout(settingsSaveTimer);
+        settingsSaveTimer = setTimeout(saveSettings, 250);
+    };
+
+    const applyDecoration = () => {
+        const label = String(savedSettings.nowPlayingLabel || '').trim() || 'NOW PLAYING';
+        if (UI.nowPlayingLabel) UI.nowPlayingLabel.textContent = label;
+
+        const renderCover = (container) => {
+            if (!container) return;
+            container.replaceChildren();
+            if (savedSettings.nowCoverImage) {
+                const img = targetWin.document.createElement('img');
+                img.src = savedSettings.nowCoverImage;
+                img.alt = '';
+                img.draggable = false;
+                container.appendChild(img);
+            } else {
+                const icon = targetWin.document.createElement('i');
+                icon.className = 'fas fa-compact-disc';
+                container.appendChild(icon);
+            }
+        };
+
+        renderCover(UI.nowCover);
+        renderCover(UI.decorationPreviewCover);
+    };
+
+    const readSmallImage = (file, maxSize = 256) => new Promise((resolve, reject) => {
+        if (!file || !file.type || !file.type.startsWith('image/')) {
+            reject(new Error('NOT_IMAGE'));
+            return;
+        }
+        if (file.size > 8 * 1024 * 1024) {
+            reject(new Error('TOO_LARGE'));
+            return;
+        }
+
+        const reader = new FileReader();
+        reader.onerror = () => reject(new Error('READ_FAILED'));
+        reader.onload = (event) => {
+            const img = new Image();
+            img.onload = () => {
+                const longest = Math.max(img.naturalWidth || 1, img.naturalHeight || 1);
+                const scale = Math.min(1, maxSize / longest);
+                const width = Math.max(1, Math.round((img.naturalWidth || 1) * scale));
+                const height = Math.max(1, Math.round((img.naturalHeight || 1) * scale));
+                const canvas = targetWin.document.createElement('canvas');
+                canvas.width = width;
+                canvas.height = height;
+                const ctx = canvas.getContext('2d');
+                if (!ctx) {
+                    reject(new Error('CANVAS_FAILED'));
+                    return;
+                }
+                ctx.drawImage(img, 0, 0, width, height);
+                const outputType = file.type === 'image/png' ? 'image/png' : 'image/jpeg';
+                try {
+                    resolve(canvas.toDataURL(outputType, outputType === 'image/jpeg' ? 0.82 : undefined));
+                } catch (err) {
+                    reject(err);
+                }
+            };
+            img.onerror = () => reject(new Error('IMAGE_FAILED'));
+            img.src = event.target.result;
+        };
+        reader.readAsDataURL(file);
+    });
+
+    const applySettings = (persist = true) => {
+
+        UI.wrapper.style.setProperty('--fm-ball-size', `${savedSettings.ballSize}px`);
+        UI.ballVisibleToggle.checked = savedSettings.showBall !== false;
+        UI.wrapper.classList.toggle('ball-hidden', savedSettings.showBall === false);
+        UI.wrapper.style.setProperty('--fm-custom-color', savedSettings.customColor);
+        
+        if (savedSettings.shapeStyle === 'square') {
+            UI.wrapper.style.setProperty('--fm-radius-ball', '8px');
+            UI.wrapper.style.setProperty('--fm-radius-panel', '0px');
+            UI.wrapper.style.setProperty('--fm-radius-btn', '4px');
+            UI.wrapper.style.setProperty('--fm-radius-input', '0px');
+            UI.wrapper.style.setProperty('--fm-radius-thumb', '2px');
+            UI.shapeBtn.innerHTML = '<i class="fas fa-circle"></i>';
+            UI.shapeBtn.title = "切换为圆润外观";
+        } else {
+            UI.wrapper.style.setProperty('--fm-radius-ball', '50%');
+            UI.wrapper.style.setProperty('--fm-radius-panel', '24px');
+            UI.wrapper.style.setProperty('--fm-radius-btn', '50%');
+            UI.wrapper.style.setProperty('--fm-radius-input', '8px');
+            UI.wrapper.style.setProperty('--fm-radius-thumb', '50%');
+            UI.shapeBtn.innerHTML = '<i class="fas fa-square"></i>';
+            UI.shapeBtn.title = "切换为方正外观";
+        }
+        
+        if (savedSettings.bgImage) {
+            UI.wrapper.style.setProperty('--fm-bg-image', `url(${savedSettings.bgImage})`);
+        } else {
+            UI.wrapper.style.setProperty('--fm-bg-image', 'none');
+        }
+        UI.wrapper.style.setProperty('--fm-bg-blur', `${savedSettings.bgBlur}px`);
+        UI.wrapper.style.setProperty('--fm-bg-brightness', `${savedSettings.bgBrightness}%`);
+        UI.wrapper.style.setProperty('--fm-lrc-font', `${savedSettings.lrcFont}px`);
+        UI.wrapper.style.setProperty('--fm-lrc-bottom', `${savedSettings.lrcBottom}px`);
+        const savedLrcFont = getSavedLrcFont();
+        if (savedLrcFont) {
+            ensureZeoFontLoaded(savedLrcFont).then((ok) => {
+                if (ok) applyLrcFont(savedLrcFont, false);
+            });
+        } else {
+            applyLrcFont(null, false);
+        }
+
+        // 修复：面板比例应用逻辑
+        if (savedSettings.panelRatio === '3:4') {
+            UI.ratioBtn.innerHTML = '<i class="fas fa-crop-alt"></i> 3:4';
+        } else if (savedSettings.panelRatio === '9:16') {
+            UI.ratioBtn.innerHTML = '<i class="fas fa-crop-alt"></i> 9:16';
+        } else {
+            UI.ratioBtn.innerHTML = '<i class="fas fa-crop-alt"></i> 自适应';
+        }
+
+        // 智能强调色应用逻辑：
+        // 如果用户自定义的颜色与当前主题默认色不同，则应用覆盖；否则移除内联样式，让CSS接管。
+        const defColor = THEME_DEFAULT_COLORS[STATE.currentTheme];
+        if (STATE.currentTheme !== 'adaptive' && savedSettings.customColor && savedSettings.customColor !== defColor) {
+            UI.wrapper.style.setProperty('--fm-accent', savedSettings.customColor);
+        } else {
+            UI.wrapper.style.removeProperty('--fm-accent');
+        }
+        
+        applyDecoration();
+        if (persist) saveSettings();
+    };
+
+    UI.sizeSlider.value = savedSettings.ballSize;
+    UI.colorPicker.value = savedSettings.customColor;
+    UI.bgBlurSlider.value = savedSettings.bgBlur;
+    UI.bgBrightnessSlider.value = savedSettings.bgBrightness;
+    UI.lrcFontSlider.value = savedSettings.lrcFont;
+    UI.lrcBottomSlider.value = savedSettings.lrcBottom;
+    UI.decorationLabelInput.value = savedSettings.nowPlayingLabel || 'NOW PLAYING';
+    applySettings();
+
+    const updateLrcModeBtns = () => {
+        UI.lrcModePlainBtn.classList.toggle('active', savedSettings.lrcMode === 'plain');
+        UI.lrcModePopupBtn.classList.toggle('active', savedSettings.lrcMode === 'popup');
+        UI.lrcModeScrollBtn.classList.toggle('active', savedSettings.lrcMode === 'scroll');
+        UI.lrcModeFallBtn.classList.toggle('active', savedSettings.lrcMode === 'fall');
+    };
+    updateLrcModeBtns();
+    syncLyricsVisibility();
+
+    UI.sizeSlider.oninput = (e) => {
+        savedSettings.ballSize = e.target.value;
+        applySettings(false);
+        scheduleSettingsSave();
+    };
+
+    UI.ballVisibleToggle.onchange = (e) => {
+        savedSettings.showBall = !!e.target.checked;
+        applySettings();
+    };
+
+    UI.colorPicker.oninput = (e) => {
+        savedSettings.customColor = e.target.value;
+        applySettings(false);
+        scheduleSettingsSave();
+    };
+
+    UI.decorationUploadBtn.onclick = () => UI.decorationUploadInput.click();
+
+    UI.decorationUploadInput.onchange = async (e) => {
+        const file = e.target.files[0];
+        if (!file) return;
+        try {
+            savedSettings.nowCoverImage = await readSmallImage(file, 256);
+            applySettings();
+            API.toast('播放器装修小图已更新');
+        } catch (err) {
+            if (err && err.message === 'TOO_LARGE') {
+                API.toast('图片原文件太大，请选择 8MB 以内的图片。');
+            } else {
+                API.toast('图片读取失败，请换一张图片重试。');
+            }
+        } finally {
+            UI.decorationUploadInput.value = '';
+        }
+    };
+
+    UI.decorationClearBtn.onclick = () => {
+        savedSettings.nowCoverImage = '';
+        applySettings();
+        API.toast('已恢复默认唱片图标');
+    };
+
+    UI.decorationLabelInput.oninput = (e) => {
+        savedSettings.nowPlayingLabel = e.target.value.slice(0, 24);
+        applyDecoration();
+        scheduleSettingsSave();
+    };
+
+    UI.bgUploadBtn.onclick = () => UI.bgUploadInput.click();
+    
+    UI.bgUploadInput.onchange = (e) => {
+        const file = e.target.files[0];
+        if (!file) return;
+        
+        const reader = new FileReader();
+        reader.onload = (event) => {
+            const imgData = event.target.result;
+            const tempImg = new Image();
+            tempImg.onload = () => {
+                savedSettings.bgImage = imgData;
+                savedSettings.bgImageWidth = tempImg.naturalWidth;
+                savedSettings.bgImageHeight = tempImg.naturalHeight;
+                applySettings();
+                
+                if (STATE.isExpanded && savedSettings.panelRatio === 'default') {
+                    // 强制重新计算高度
+                    togglePanel();
+                    togglePanel();
+                }
+            };
+            tempImg.src = imgData;
+            UI.bgUploadInput.value = '';
+        };
+        reader.readAsDataURL(file);
+    };
+
+    UI.bgClearBtn.onclick = () => {
+        savedSettings.bgImage = '';
+        savedSettings.bgImageWidth = 0;
+        savedSettings.bgImageHeight = 0;
+        applySettings();
+        
+        if (STATE.isExpanded && savedSettings.panelRatio === 'default') {
+            togglePanel();
+            togglePanel();
+        }
+    };
+
+    UI.ratioBtn.onclick = () => {
+        const ratios = ['default', '3:4', '9:16'];
+        let idx = ratios.indexOf(savedSettings.panelRatio);
+        idx = (idx + 1) % ratios.length;
+        savedSettings.panelRatio = ratios[idx];
+        applySettings();
+        
+        if (STATE.isExpanded) {
+            // 强制重新计算高度和位置
+            togglePanel();
+            togglePanel();
+        }
+    };
+
+    UI.bgBlurSlider.oninput = (e) => {
+        savedSettings.bgBlur = e.target.value;
+        applySettings();
+    };
+
+    UI.bgBrightnessSlider.oninput = (e) => {
+        savedSettings.bgBrightness = e.target.value;
+        applySettings();
+    };
+
+    audio.onplay = () => {
+        STATE.isPlaying = true;
+        UI.playBtn.innerHTML = '<i class="fas fa-pause"></i>';
+        UI.ball.classList.add('playing');
+        if (lrcRafId) cancelAnimationFrame(lrcRafId);
+        updateLyrics();
+    };
+    audio.onpause = () => {
+        STATE.isPlaying = false;
+        UI.playBtn.innerHTML = '<i class="fas fa-play"></i>';
+        UI.ball.classList.remove('playing');
+        if (lrcRafId) cancelAnimationFrame(lrcRafId);
+    };
+    audio.onended = () => {
+        if (STATE.playMode === 'repeat_one') { audio.currentTime = 0; audio.play(); }
+        else playNext();
+    };
+    audio.ontimeupdate = () => {
+        if (!STATE.isSeekingProgress) updateProgressUI(audio.currentTime, audio.duration);
+        if (STATE.isLyricsVisible) updateLyrics();
+    };
+    audio.onloadedmetadata = () => { if (!STATE.isSeekingProgress) updateProgressUI(audio.currentTime, audio.duration); };
+    audio.onerror = () => {
+        const failedIndex = STATE.currentIndex;
+        const failedToken = audio.__playToken;
+        if (failedIndex < 0 || !audio.src || failedToken !== STATE.playRequestId) return;
+        const list = STATE.playlists.find(p => p.id === STATE.playingPlaylistId);
+        const track = list && list.tracks[failedIndex];
+        if (!track) return;
+
+        if (track.__retriedOnError) {
+            console.warn('[АрⅤ] 播放失败，重新解析后仍无法播放', track.title);
+            return;
+        }
+
+        track.__retriedOnError = true;
+        track.url = null; 
+        console.warn('[АрⅤ] 播放失败，尝试重新解析音源后自动重试一次', track.title);
+        playTrack(failedIndex, STATE.playingPlaylistId, true);
+    };
+
+
+                // 运行体完成初始化后，把真正的控制入口交给轻量入口。
+                return {
+                    togglePanel: typeof togglePanel === 'function' ? togglePanel : null,
+                    cleanup: () => {
+                        try { if (audio) { audio.pause(); audio.src = ''; audio = null; } } catch (_) {}
+                        try { if (lrcRafId) cancelAnimationFrame(lrcRafId); } catch (_) {}
+                        try { saveSettings(); } catch (_) {}
+                        try { clearTimeout(settingsSaveTimer); } catch (_) {}
+                        try { const c = targetDoc.getElementById(CONFIG.ID); if (c) c.remove(); } catch (_) {}
+                    }
+                };
+            };
+
+            return initializePlayerRuntime();
+        })();
         return runtimePromise;
     }
 
-    async function openPlayer() {
-        try {
-            const runtime = await loadRuntime();
-            runtime.open();
-        } catch (err) {
-            console.error('[ApV播放器] 打开失败', err);
-            try {
-                if (typeof triggerSlash === 'function') triggerSlash('/echo severity=error [播放器测试] 播放器打开失败，请查看控制台。');
-            } catch (_) {}
-        }
-    }
-
-    function installMenu() {
-        const menu = targetDoc.querySelector('#extensionsMenu');
+    function installLightweightEntry() {
+        const doc = targetDoc;
+        if (!doc || !doc.body) return false;
+        const menu = doc.querySelector('#extensionsMenu');
         if (!menu) return false;
-        targetDoc.getElementById(MENU_ID)?.remove();
-        const container = targetDoc.createElement('div');
-        container.id = MENU_ID;
+
+        const old = doc.querySelector('#arv_terminal_wand_container');
+        if (old) old.remove();
+
+        const container = doc.createElement('div');
+        container.id = 'arv_terminal_wand_container';
         container.className = 'extension_container';
-        const item = targetDoc.createElement('div');
-        item.id = ITEM_ID;
+
+        const item = doc.createElement('div');
+        item.id = 'arvTerminalExtensionMenuItem';
         item.className = 'list-group-item flex-container flexGap5';
         item.title = '打开 播放器测试 音乐播放器';
         item.innerHTML = '<div class="fa-fw fa-solid fa-music extensionsMenuExtensionButton"></div><span>播放器测试</span>';
-        item.addEventListener('click', event => {
+
+        item.addEventListener('click', async (event) => {
             event.preventDefault();
             event.stopPropagation();
-            openPlayer();
+            const runtime = await ensurePlayerRuntime();
+            runtime?.togglePanel?.();
         });
+
         container.appendChild(item);
         menu.appendChild(container);
         return true;
     }
 
-    // 入口安装失败时只做极少次数的短暂重试，不创建播放器、不读歌单。
-    if (!installMenu()) {
-        let attempts = 0;
-        const tryInstall = () => {
-            if (installMenu() || ++attempts >= 5) return;
-            targetWin.setTimeout(tryInstall, 800);
-        };
-        targetWin.setTimeout(tryInstall, 300);
+    async function toggleFromExtensionEvent() {
+        const runtime = await ensurePlayerRuntime();
+        runtime?.togglePanel?.();
     }
 
-    if (typeof eventOn === 'function' && typeof getButtonEvent === 'function') {
+    // TT：等待宿主 ready；普通 ST：直接安装轻量入口。这里没有播放器 DOM/歌单/Audio 初始化。
+    if (isTauriTavern) {
         try {
-            eventOn(getButtonEvent('显隐播放器'), async () => {
-                const runtime = await loadRuntime();
-                runtime.toggle ? runtime.toggle() : runtime.open();
-            });
+            const ready = targetWin.__TAURITAVERN__?.ready || targetWin.__TAURITAVERN_MAIN_READY__;
+            if (ready && typeof ready.then === 'function') await ready;
         } catch (_) {}
     }
+
+    targetWin._flowMusicToggle = toggleFromExtensionEvent;
+    if (typeof eventOn === 'function' && typeof getButtonEvent === 'function') {
+        eventOn(getButtonEvent('显隐播放器'), targetWin._flowMusicToggle);
+    }
+
+    // 菜单本身仍可能比扩展脚本晚出现，所以只保留两个一次性低成本重试。
+    if (!installLightweightEntry()) {
+        setTimeout(() => {
+            if (!installLightweightEntry()) setTimeout(installLightweightEntry, 1800);
+        }, 500);
+    }
+
+    targetWin.addEventListener('pagehide', () => {
+        if (runtimePromise) {
+            runtimePromise.then(runtime => runtime?.cleanup?.()).catch(() => {});
+        }
+        delete targetWin._flowMusicToggle;
+    }, { once: true });
+
 })();
