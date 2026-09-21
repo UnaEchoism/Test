@@ -433,11 +433,27 @@
         }
         .fm-panel.open { opacity: 1; transform: scale(1) translateY(0); pointer-events: auto; }
 
-        /* 性能测试版：避免 backdrop-filter 在 Tauri/WebView 中持续触发大面积 GPU 合成。
-           保留半透明外观，但取消实时背景模糊。 */
+        /* 性能优化：普通主题不启用实时毛玻璃；仅在用户选择“毛玻璃”主题时恢复视觉模糊。
+           这样不会把毛玻璃的 GPU 合成成本带到其它主题，也不影响歌词层优化。 */
         .fm-ball, .fm-panel, .fm-popover, .dot-glass {
             backdrop-filter: none !important;
             -webkit-backdrop-filter: none !important;
+        }
+        .theme-glass .fm-ball {
+            backdrop-filter: blur(12px) !important;
+            -webkit-backdrop-filter: blur(12px) !important;
+        }
+        .theme-glass .fm-panel {
+            backdrop-filter: blur(20px) !important;
+            -webkit-backdrop-filter: blur(20px) !important;
+        }
+        .theme-glass .fm-popover {
+            backdrop-filter: blur(10px) !important;
+            -webkit-backdrop-filter: blur(10px) !important;
+        }
+        .theme-glass .dot-glass {
+            backdrop-filter: blur(4px) !important;
+            -webkit-backdrop-filter: blur(4px) !important;
         }
         .fm-panel:not(.open) {
             display: none;
