@@ -380,9 +380,8 @@
     // 定位到视口任意位置，但这个根节点自身只占 1×1px，避免给 SillyTavern 制造全屏固定层。
     container.style.cssText = `
         position: fixed; top: 0; left: 0;
-        width: 0; height: 0;
+        width: 1px; height: 1px;
         overflow: visible; pointer-events: none; z-index: ${CONFIG.Z_INDEX};
-        contain: layout style; isolation: isolate;
     `;
     targetDoc.body.appendChild(container);
 
@@ -423,7 +422,7 @@
             transition: var(--fm-transition); touch-action: none; user-select: none; z-index: 10;
         }
         .fm-ball:active { cursor: grabbing; transform: scale(0.95); }
-        .fm-ball.playing { box-shadow: 0 0 12px var(--fm-shadow), 0 0 0 3px var(--fm-border); }
+        .fm-ball.playing { animation: breathe 3s ease-in-out infinite; }
         @keyframes breathe {
             0%, 100% { box-shadow: 0 0 8px var(--fm-shadow), 0 0 0 0 rgba(255,255,255,0); transform: scale(1); }
             50% { box-shadow: 0 0 16px var(--fm-shadow), 0 0 0 6px var(--fm-border); transform: scale(1.02); }
@@ -565,7 +564,7 @@
         .fm-panel-bg {
             position: absolute; top: -10%; left: -10%; width: 120%; height: 120%; z-index: -1;
             background-size: cover; background-position: center; background-repeat: no-repeat;
-            pointer-events: none; transition: filter 0.3s; contain: paint;
+            pointer-events: none; transition: filter 0.3s;
             background-image: var(--fm-bg-image, none);
             filter: blur(var(--fm-bg-blur, 0px)) brightness(var(--fm-bg-brightness, 100%));
         }
@@ -580,7 +579,7 @@
         .fm-panel-bg {
             position: absolute; top: -10%; left: -10%; width: 120%; height: 120%; z-index: -1;
             background-size: cover; background-position: center; background-repeat: no-repeat;
-            pointer-events: none; transition: filter 0.3s; contain: paint;
+            pointer-events: none; transition: filter 0.3s;
             background-image: var(--fm-bg-image, none);
             filter: blur(var(--fm-bg-blur, 0px)) brightness(var(--fm-bg-brightness, 100%));
         }
@@ -788,7 +787,7 @@
     shadow.appendChild(style);
 
     const wrapper = targetDoc.createElement('div');
-    wrapper.className = `fm-player-root theme-${STATE.currentTheme}`;
+    wrapper.className = `theme-${STATE.currentTheme}`;
     
     wrapper.innerHTML = `
         <div class="fm-ball" id="fm-ball" title="拖拽移动，点击展开"><i class="fas fa-music"></i></div>
@@ -2741,7 +2740,7 @@
             dot.classList.add('active');
             STATE.currentTheme = dot.dataset.theme;
             savedSettings.theme = STATE.currentTheme;
-            UI.wrapper.className = `fm-player-root theme-${STATE.currentTheme}`;
+            UI.wrapper.className = `theme-${STATE.currentTheme}`;
             
             // 切换主题时，恢复该主题的默认强调色
             const defColor = THEME_DEFAULT_COLORS[STATE.currentTheme];
@@ -3072,17 +3071,12 @@
         if (STATE.playMode === 'repeat_one') { audio.currentTime = 0; audio.play(); }
         else playNext();
     };
-    let progressRafId = null;
     audio.ontimeupdate = () => {
-        // 歌词同步由 scheduleLyricsUpdate 单独负责；这里仅处理播放器进度。
-        // 使用 RAF 合并短时间内连续的 timeupdate，避免与 ST 生成/滚动争抢主线程。
-        if (!STATE.isExpanded || STATE.isSeekingProgress || progressRafId) return;
-        progressRafId = requestAnimationFrame(() => {
-            progressRafId = null;
-            if (STATE.isExpanded && !STATE.isSeekingProgress) {
-                updateProgressUI(audio.currentTime, audio.duration);
-            }
-        });
+        // 播放器关闭时，停止播放器面板的高频 DOM 更新，但歌词必须继续跟随音乐推进。
+        // 歌词现在是独立的小型渲染层，因此不会再因为这里继续更新而把整个播放器页面带入高频重排。
+        if (STATE.isExpanded && !STATE.isSeekingProgress) {
+            updateProgressUI(audio.currentTime, audio.duration);
+        }
     };
     audio.onloadedmetadata = () => { if (!STATE.isSeekingProgress) updateProgressUI(audio.currentTime, audio.duration); };
     audio.onerror = () => {
@@ -3182,7 +3176,6 @@
     const cleanupPlayerInstance = () => {
         try { if (audio) { audio.pause(); audio.src = ''; audio = null; } } catch (_) {}
         try { if (lrcRafId) cancelAnimationFrame(lrcRafId); } catch (_) {}
-        try { if (progressRafId) cancelAnimationFrame(progressRafId); progressRafId = null; } catch (_) {}
         try { stopLyricsTimer(); } catch (_) {}
         try { clearTimeout(settingsSaveTimer); } catch (_) {}
         try { if (menuRetryTimer) clearInterval(menuRetryTimer); } catch (_) {}
