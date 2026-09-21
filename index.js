@@ -141,7 +141,6 @@
         lyricsData: [],
         isLyricsVisible: true,
         lastActiveLrcIndex: -1,
-        lastRenderedScrollIndex: -1,
         isSeekingProgress: false,
         playRequestId: 0,
         uiInitialized: false,
@@ -365,8 +364,6 @@
     // ================= UI 构建 =================
     const oldContainer = targetDoc.getElementById(CONFIG.ID);
     if (oldContainer) oldContainer.remove();
-    const oldLyricLayer = targetDoc.getElementById('apv-lyrics-layer');
-    if (oldLyricLayer) oldLyricLayer.remove();
 
     const container = targetDoc.createElement('div');
     container.id = CONFIG.ID;
@@ -986,98 +983,13 @@
 
 
         <div class="fm-pop-menu" id="fm-pop-menu"></div>
-    `;
-    shadow.appendChild(wrapper);
-
-    // 独立歌词层：不再挂在全屏播放器容器里，避免酒馆页面滚动/消息渲染与歌词动画进入同一棵 DOM 树。
-    // 这里只复用“技术思路”，歌词的结构、样式和动画仍保持 ApV 自己的实现。
-    const lyricLayer = targetDoc.createElement('div');
-    lyricLayer.id = 'apv-lyrics-layer';
-    lyricLayer.style.cssText = `
-        position: fixed; left: 50%; bottom: 0;
-        width: 0; height: 0; overflow: visible;
-        pointer-events: none; z-index: 2147483647;
-        contain: layout paint style; isolation: isolate;
-    `;
-    targetDoc.body.appendChild(lyricLayer);
-    const lyricShadow = lyricLayer.attachShadow({ mode: 'open' });
-    const lyricStyle = targetDoc.createElement('style');
-    lyricStyle.textContent = `
-        :host {
-            --fm-font: 'Segoe UI', -apple-system, BlinkMacSystemFont, Roboto, sans-serif;
-            --fm-lrc-font: 16px; --fm-lrc-bottom: 80px;
-            --fm-accent: #4a90e2; --fm-text-sub: #888; --fm-shadow: rgba(0,0,0,.4);
-            --fm-lrc-family: var(--fm-font);
-        }
-        .lyric-host {
-            position: fixed; left: 50%;
-            bottom: calc(var(--fm-lrc-bottom) + env(safe-area-inset-bottom, 0px));
-            width: max-content; max-width: 80vw; min-width: 60px;
-            max-height: 40dvh; overflow: visible;
-            transform: translateX(-50%);
-            pointer-events: none;
-            contain: layout paint style;
-            isolation: isolate;
-        }
-        .fm-out-lyrics, .fm-out-lyrics-scroll {
-            font-family: var(--fm-lrc-family, var(--fm-font));
-            box-sizing: border-box; pointer-events: none;
-            text-align: center;
-        }
-        .fm-out-lyrics {
-            position: relative; width: 100%; max-width: 100%; min-width: 60px;
-            min-height: 24px; max-height: 40dvh; height: auto;
-            overflow: hidden; display:flex; flex-direction:column;
-            align-items:center; gap:4px; opacity:1;
-        }
-        .fm-out-lyrics-scroll {
-            position: relative; width:100%; max-width:100%; min-width:60px;
-            height: calc(var(--fm-lrc-font) * 5.4); max-height:40dvh;
-            overflow:hidden; opacity:1;
-            -webkit-mask-image:linear-gradient(to bottom, transparent 0%, black 20%, black 80%, transparent 100%);
-            mask-image:linear-gradient(to bottom, transparent 0%, black 20%, black 80%, transparent 100%);
-        }
-        .fm-lrc-line, .fm-lrc-plain-line {
-            font-family:var(--fm-lrc-family, var(--fm-font));
-            font-size:var(--fm-lrc-font); font-weight:bold; color:var(--fm-accent);
-            line-height:1.4; text-shadow:0 2px 8px var(--fm-shadow),0 0 2px rgba(0,0,0,.5);
-        }
-        .fm-lrc-plain-trans { margin-top:4px; }
-        .fm-lrc-trans {
-            font-family:var(--fm-lrc-family, var(--fm-font));
-            font-size:calc(var(--fm-lrc-font) * .75); color:var(--fm-text-sub);
-            text-shadow:0 1px 4px var(--fm-shadow);
-        }
-        .lrc-anim-char { display:inline-block; opacity:0; transform:translateY(4px); animation:lrc-in 1s cubic-bezier(.22,1,.36,1) forwards; }
-        @keyframes lrc-in { to { opacity:1; transform:translateY(0); } }
-        .lrc-anim-fall { display:inline-block; opacity:0; transform:translateY(-40px); animation:lrc-fall-in .8s cubic-bezier(.22,1,.36,1) forwards; }
-        @keyframes lrc-fall-in { 0%{opacity:0;transform:translateY(-40px)} 100%{opacity:1;transform:translateY(0)} }
-        .lrc-trans-fade { opacity:0; animation:lrc-trans-fade-in .8s cubic-bezier(.22,1,.36,1) forwards; }
-        @keyframes lrc-trans-fade-in { 0%{opacity:0} 100%{opacity:1} }
-        @keyframes lrc-fade-out { 0%{opacity:1;transform:scale(1)} 100%{opacity:0;transform:scale(.95)} }
-        .fm-lrc-scroll-list { position:absolute; left:0; top:0; width:100%; will-change:transform; }
-        .fm-lrc-scroll-line {
-            font-family:var(--fm-lrc-family, var(--fm-font));
-            font-size:var(--fm-lrc-font); line-height:1.8; color:var(--fm-text-sub);
-            opacity:.35; text-align:center; white-space:nowrap;
-            transition:color .25s ease, opacity .25s ease, font-size .25s ease;
-        }
-        .fm-lrc-scroll-line.near { opacity:.55; }
-        .fm-lrc-scroll-line.current { color:var(--fm-accent); font-weight:bold; opacity:1; font-size:calc(var(--fm-lrc-font) * 1.15); }
-    `;
-    lyricShadow.appendChild(lyricStyle);
-    const lyricHost = targetDoc.createElement('div');
-    lyricHost.className = `lyric-host theme-${STATE.currentTheme}`;
-    lyricHost.innerHTML = `
         <div class="fm-out-lyrics show" id="fm-out-lyrics"></div>
         <div class="fm-out-lyrics-scroll show" id="fm-out-lyrics-scroll"><div class="fm-lrc-scroll-list" id="fm-lrc-scroll-list"></div></div>
     `;
-    lyricShadow.appendChild(lyricHost);
+    shadow.appendChild(wrapper);
 
     const UI = {
         wrapper: wrapper,
-        lyricLayer: lyricLayer,
-        lyricHost: lyricHost,
         ball: wrapper.querySelector('#fm-ball'),
         panel: wrapper.querySelector('#fm-panel'),
         closeBtn: wrapper.querySelector('#fm-close'),
@@ -1107,8 +1019,8 @@
         lrcFontUrl: wrapper.querySelector('#fm-lrc-font-url'),
         lrcFontImport: wrapper.querySelector('#fm-lrc-font-import'),
         lrcFontReset: wrapper.querySelector('#fm-lrc-font-reset'),
-        outLyricsScroll: lyricShadow.querySelector('#fm-out-lyrics-scroll'),
-        outLyricsScrollList: lyricShadow.querySelector('#fm-lrc-scroll-list'),
+        outLyricsScroll: wrapper.querySelector('#fm-out-lyrics-scroll'),
+        outLyricsScrollList: wrapper.querySelector('#fm-lrc-scroll-list'),
         sourceSelect: wrapper.querySelector('#fm-source-select'),
         input: wrapper.querySelector('#fm-input'),
         addBtn: wrapper.querySelector('#fm-add'),
@@ -1126,13 +1038,114 @@
         ratioBtn: wrapper.querySelector('#fm-bg-btn-ratio'),
         bgBlurSlider: wrapper.querySelector('#fm-bg-blur'),
         bgBrightnessSlider: wrapper.querySelector('#fm-bg-brightness'),
-        outLyrics: lyricShadow.querySelector('#fm-out-lyrics'),
+        outLyrics: wrapper.querySelector('#fm-out-lyrics'),
         progressTrack: wrapper.querySelector('#fm-progress-track'),
         progressFill: wrapper.querySelector('#fm-progress-fill'),
         progressThumb: wrapper.querySelector('#fm-progress-thumb'),
         timeCurrent: wrapper.querySelector('#fm-time-current'),
         timeDuration: wrapper.querySelector('#fm-time-duration')
     };
+
+    // ================= 独立桌面歌词渲染层 =================
+    // 歌词独立于播放器 Shadow DOM，但宿主本身只占“歌词实际需要的那一小块”。
+    // 不使用 100vw / 100vh，避免为了隔离歌词而重新制造全屏绘制区域。
+    const lyricHost = targetDoc.createElement('div');
+    lyricHost.id = 'apv-lyrics-host';
+    lyricHost.style.cssText = `
+        position: fixed;
+        left: 50%;
+        bottom: calc(var(--fm-lrc-bottom, 80px) + env(safe-area-inset-bottom, 0px));
+        width: max-content;
+        max-width: 80vw;
+        min-width: 60px;
+        height: max-content;
+        max-height: 40dvh;
+        transform: translateX(-50%);
+        overflow: visible;
+        pointer-events: none;
+        z-index: 2147483647;
+        contain: layout paint style;
+        isolation: isolate;
+    `;
+    targetDoc.body.appendChild(lyricHost);
+    const lyricShadow = lyricHost.attachShadow({ mode: 'open' });
+    const lyricStyle = targetDoc.createElement('style');
+    lyricStyle.textContent = `
+        :host {
+            all: initial;
+            --fm-font: 'Segoe UI', -apple-system, BlinkMacSystemFont, Roboto, sans-serif;
+            --fm-lrc-font: 16px;
+            --fm-lrc-bottom: 80px;
+            --fm-lrc-family: var(--fm-font);
+            --fm-accent: #fff;
+            --fm-text-sub: rgba(255,255,255,.7);
+            --fm-shadow: rgba(0,0,0,.4);
+        }
+        .fm-out-lyrics, .fm-out-lyrics *,
+        .fm-out-lyrics-scroll, .fm-out-lyrics-scroll * {
+            font-family: var(--fm-lrc-family, var(--fm-font)) !important;
+            box-sizing: border-box;
+        }
+        .fm-out-lyrics {
+            position: relative;
+            width: max-content; max-width: 80vw; min-width: 60px;
+            min-height: 24px; max-height: 40dvh; height: auto;
+            overflow: hidden;
+            text-align: center; pointer-events: none;
+            display: flex; flex-direction: column; align-items: center; gap: 4px;
+            opacity: 0; transition: opacity .5s;
+        }
+        .fm-out-lyrics.show { opacity: 1; }
+        .fm-out-lyrics:not(.show), .fm-out-lyrics-scroll:not(.show) { display: none !important; }
+        .fm-lrc-line { font-size: var(--fm-lrc-font, 16px); font-weight: bold; color: var(--fm-accent); text-shadow: 0 2px 8px var(--fm-shadow), 0 0 2px rgba(0,0,0,.5); line-height: 1.4; }
+        .fm-lrc-plain-line { font-size: var(--fm-lrc-font, 16px); font-weight: bold; color: var(--fm-accent); line-height: 1.4; text-shadow: 0 2px 8px var(--fm-shadow), 0 0 2px rgba(0,0,0,.5); }
+        .fm-lrc-plain-trans { margin-top: 4px; }
+        .fm-lrc-trans { font-size: calc(var(--fm-lrc-font, 16px) * .75); color: var(--fm-text-sub); text-shadow: 0 1px 4px var(--fm-shadow); }
+        .lrc-anim-char { display: inline-block; opacity: 0; transform: translateY(4px); animation: lrc-in 1s cubic-bezier(.22,1,.36,1) forwards; }
+        @keyframes lrc-in { to { opacity: 1; transform: translateY(0); } }
+        .lrc-anim-fall { display:inline-block; opacity:0; transform:translateY(-40px); animation:lrc-fall-in .8s cubic-bezier(.22,1,.36,1) forwards; }
+        @keyframes lrc-fall-in { 0%{opacity:0;transform:translateY(-40px)} 100%{opacity:1;transform:translateY(0)} }
+        .lrc-trans-fade { opacity:0; animation:lrc-trans-fade-in .8s cubic-bezier(.22,1,.36,1) forwards; }
+        @keyframes lrc-trans-fade-in { 0%{opacity:0} 100%{opacity:1} }
+        @keyframes lrc-fade-out { 0%{opacity:1;transform:scale(1)} 100%{opacity:0;transform:scale(.95)} }
+        .lrc-highlight { color:#ff4d4f !important; text-shadow:0 0 8px rgba(255,77,79,.6),0 2px 4px rgba(0,0,0,.5) !important; }
+        .fm-out-lyrics-scroll {
+            position: relative;
+            width: max-content; max-width: 80vw; min-width: 60px;
+            height: calc(var(--fm-lrc-font, 16px) * 5.4);
+            max-height: 40dvh; overflow: hidden; box-sizing: border-box;
+            pointer-events: none;
+            opacity: 0; transition: opacity .5s;
+            -webkit-mask-image: linear-gradient(to bottom, transparent 0%, black 30%, black 70%, transparent 100%);
+            mask-image: linear-gradient(to bottom, transparent 0%, black 30%, black 70%, transparent 100%);
+        }
+        .fm-out-lyrics-scroll.show { opacity: 1; }
+        .fm-lrc-scroll-list { display:flex; flex-direction:column; align-items:center; transition:transform .45s cubic-bezier(.25,.8,.25,1); }
+        .fm-lrc-scroll-line { font-size:var(--fm-lrc-font,16px); line-height:1.8; color:var(--fm-text-sub); opacity:.35; text-align:center; text-shadow:0 2px 8px var(--fm-shadow); white-space:nowrap; padding:2px 10px; transition:opacity .4s,color .4s,font-size .4s; }
+        .fm-lrc-scroll-line.near { opacity:.6; }
+        .fm-lrc-scroll-line.current { color:var(--fm-accent); font-weight:bold; opacity:1; font-size:calc(var(--fm-lrc-font,16px) * 1.15); }
+    `;
+    lyricShadow.appendChild(lyricStyle);
+    const lyricOut = UI.outLyrics;
+    const lyricScroll = UI.outLyricsScroll;
+    const lyricScrollList = UI.outLyricsScrollList;
+    lyricShadow.appendChild(lyricOut);
+    lyricShadow.appendChild(lyricScroll);
+    UI.outLyrics = lyricOut;
+    UI.outLyricsScroll = lyricScroll;
+    UI.outLyricsScrollList = lyricScrollList;
+    UI.lyricHost = lyricHost;
+    UI.lyricShadow = lyricShadow;
+
+    const syncLyricHostVars = () => {
+        const names = ['--fm-font','--fm-lrc-font','--fm-lrc-bottom','--fm-lrc-family','--fm-bg','--fm-text-main','--fm-text-sub','--fm-accent','--fm-border','--fm-shadow'];
+        const cs = targetWin.getComputedStyle(UI.wrapper);
+        names.forEach((name) => {
+            const value = cs.getPropertyValue(name).trim();
+            if (value) lyricHost.style.setProperty(name, value);
+        });
+    };
+    syncLyricHostVars();
 
     // ================= 桌面歌词字体 =================
     // 只接受用户主动提供的 ZeoSeven 字体详情页 / FontsAPI URL。
@@ -1255,7 +1268,7 @@
         const family = font?.family || '';
         const safeFamily = family ? `"${family.replace(/"/g,'\\"')}"` : '';
         UI.wrapper.style.setProperty('--fm-lrc-family', safeFamily || 'var(--fm-font)');
-        UI.lyricHost.style.setProperty('--fm-lrc-family', safeFamily || 'var(--fm-font)');
+        if (UI.lyricHost) UI.lyricHost.style.setProperty('--fm-lrc-family', safeFamily || 'var(--fm-font)');
         const lyricRoots = [UI.outLyrics, UI.outLyricsScroll, UI.outLyricsScrollList].filter(Boolean);
         lyricRoots.forEach(root => {
             root.style.setProperty('font-family', safeFamily || 'var(--fm-font)', 'important');
@@ -2268,17 +2281,11 @@
     function renderScrollActiveLine(activeIdx) {
         const lineEls = UI.outLyricsScrollList.children;
         if (lineEls.length === 0) return;
-        const prevIdx = STATE.lastRenderedScrollIndex;
-        const touched = new Set();
-        [prevIdx - 1, prevIdx, prevIdx + 1, activeIdx - 1, activeIdx, activeIdx + 1].forEach(i => {
-            if (i >= 0 && i < lineEls.length) touched.add(i);
-        });
-        touched.forEach(i => {
-            const el = lineEls[i];
-            el.classList.toggle('current', i === activeIdx);
-            el.classList.toggle('near', i !== activeIdx && Math.abs(i - activeIdx) === 1);
-        });
-        STATE.lastRenderedScrollIndex = activeIdx;
+        for (let i = 0; i < lineEls.length; i++) {
+            lineEls[i].classList.remove('current', 'near');
+            if (i === activeIdx) lineEls[i].classList.add('current');
+            else if (Math.abs(i - activeIdx) === 1) lineEls[i].classList.add('near');
+        }
         const activeLine = lineEls[activeIdx];
         if (!activeLine) return;
         const containerHeight = UI.outLyricsScroll.clientHeight;
@@ -2292,15 +2299,13 @@
         if (!STATE.isLyricsVisible || STATE.lyricsData.length === 0 || audio.paused) return;
         const ct = audio.currentTime;
         const isFallMode = savedSettings.lrcMode === 'fall';
+        
+        // 随机掉落模式下，提前 0.8 秒触发下一句，实现交叠效果
         const effectiveTime = ct + (isFallMode ? 0.8 : 0);
-
-        // 参考成熟播放器的同步方式：歌词同步循环可以高频运行，但只有“当前句变化”时才改 DOM。
-        // 同时用二分查找定位当前句，避免每帧从整份歌词尾部开始扫描。
-        let lo = 0, hi = STATE.lyricsData.length - 1, activeIdx = -1;
-        while (lo <= hi) {
-            const mid = (lo + hi) >> 1;
-            if (effectiveTime >= STATE.lyricsData[mid].time) { activeIdx = mid; lo = mid + 1; }
-            else hi = mid - 1;
+        
+        let activeIdx = -1;
+        for (let i = STATE.lyricsData.length - 1; i >= 0; i--) {
+            if (effectiveTime >= STATE.lyricsData[i].time) { activeIdx = i; break; }
         }
 
         if (activeIdx !== -1 && activeIdx !== STATE.lastActiveLrcIndex) {
@@ -2454,6 +2459,9 @@
                 }
             }
         }
+        // 歌词只需要在播放进度更新时检查当前行，不再用 requestAnimationFrame 每帧扫描。
+        // 这样可以避免歌词开启后占满主线程，尤其适合手机端。
+        lrcRafId = null;
     }
 
     // ================= 事件绑定 =================
@@ -2818,16 +2826,7 @@
         UI.wrapper.style.setProperty('--fm-bg-brightness', `${savedSettings.bgBrightness}%`);
         UI.wrapper.style.setProperty('--fm-lrc-font', `${savedSettings.lrcFont}px`);
         UI.wrapper.style.setProperty('--fm-lrc-bottom', `${savedSettings.lrcBottom}px`);
-        // 同步到真正独立的歌词渲染树，只在设置变化时读取一次主题变量。
-        try {
-            const cs = targetWin.getComputedStyle(UI.wrapper);
-            ['--fm-bg','--fm-text-main','--fm-text-sub','--fm-accent','--fm-shadow'].forEach(name => {
-                UI.lyricHost.style.setProperty(name, cs.getPropertyValue(name));
-            });
-        } catch (_) {}
-        UI.lyricHost.style.setProperty('--fm-lrc-font', `${savedSettings.lrcFont}px`);
-        UI.lyricHost.style.setProperty('--fm-lrc-bottom', `${savedSettings.lrcBottom}px`);
-        UI.lyricHost.className = `lyric-host theme-${STATE.currentTheme}`;
+        syncLyricHostVars();
         const savedLrcFont = getSavedLrcFont();
         if (savedLrcFont) {
             ensureZeoFontLoaded(savedLrcFont).then((ok) => {
@@ -2990,34 +2989,18 @@
         applySettings();
     };
 
-    const startLyricsSync = () => {
-        if (lrcRafId) cancelAnimationFrame(lrcRafId);
-        STATE.lastActiveLrcIndex = -1;
-        STATE.lastRenderedScrollIndex = -1;
-        updateLyrics();
-        const loop = () => {
-            lrcRafId = null;
-            if (!STATE.isLyricsVisible || audio.paused || STATE.lyricsData.length === 0) return;
-            updateLyrics();
-            lrcRafId = requestAnimationFrame(loop);
-        };
-        lrcRafId = requestAnimationFrame(loop);
-    };
-    const stopLyricsSync = () => {
-        if (lrcRafId) { cancelAnimationFrame(lrcRafId); lrcRafId = null; }
-    };
-
     audio.onplay = () => {
         STATE.isPlaying = true;
         UI.playBtn.innerHTML = '<i class="fas fa-pause"></i>';
         UI.ball.classList.add('playing');
-        startLyricsSync();
+        if (lrcRafId) cancelAnimationFrame(lrcRafId);
+        updateLyrics();
     };
     audio.onpause = () => {
         STATE.isPlaying = false;
         UI.playBtn.innerHTML = '<i class="fas fa-play"></i>';
         UI.ball.classList.remove('playing');
-        stopLyricsSync();
+        if (lrcRafId) cancelAnimationFrame(lrcRafId);
     };
     audio.onended = () => {
         if (STATE.playMode === 'repeat_one') { audio.currentTime = 0; audio.play(); }
@@ -3029,7 +3012,7 @@
         if (STATE.isExpanded && !STATE.isSeekingProgress) {
             updateProgressUI(audio.currentTime, audio.duration);
         }
-        // 歌词由独立 RAF 同步，timeupdate 不再参与歌词 DOM 更新。
+        if (STATE.isLyricsVisible) updateLyrics();
     };
     audio.onloadedmetadata = () => { if (!STATE.isSeekingProgress) updateProgressUI(audio.currentTime, audio.duration); };
     audio.onerror = () => {
