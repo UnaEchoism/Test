@@ -1011,36 +1011,143 @@
     };
 
     // ================= 桌面歌词字体 =================
-    // 安全版：打开选择器时绝不加载远程字体；只有用户点击某个字体后才按需加载。
-    // 这样可以避免 Tauri/WebView 在打开选择器时同时处理大量远程字体资源而卡住界面。
+    // ZeoSeven 在线字体目录：这里只在用户首次搜索/打开字体选择时后台同步，
+    // 不在播放器启动阶段批量加载字体，避免 WebView 卡顿。
     const ZEOSEVEN_FONTS = [
-        { name:'霞鹜文楷', family:'LXGW WenKai', css:'https://fontsapi.zeoseven.com/292/main/result.css' },
-        { name:'霞鹜臻楷', family:'LXGW ZhenKai GB', css:'https://fontsapi.zeoseven.com/2/main/result.css' },
-        { name:'霞鹜文楷 Mono', family:'LXGW WenKai Mono', css:'https://fontsapi.zeoseven.com/293/main/result.css' },
-        { name:'思源黑体', family:'Noto Sans CJK', css:'https://fontsapi.zeoseven.com/69/main/result.css' },
-        { name:'思源宋体', family:'Noto Serif CJK', css:'https://fontsapi.zeoseven.com/285/main/result.css' },
-        { name:'朱雀仿宋', family:'Zhuque Fangsong (technical preview)', css:'https://fontsapi.zeoseven.com/7/main/result.css' },
-        { name:'梦源黑体', family:'Dream Han Sans CN W4', css:'https://fontsapi.zeoseven.com/2243/main/result.css' },
-        { name:'梦源宋体', family:'Dream Han Serif CN W4', css:'https://fontsapi.zeoseven.com/2244/main/result.css' },
-        { name:'狮尾黑体', family:'Swei Sans', css:'https://fontsapi.zeoseven.com/708/main/result.css' },
-        { name:'台湾圆体', family:'TaiwanPearl', css:'https://fontsapi.zeoseven.com/710/main/result.css' },
-        { name:'汇文明朝体', family:'Huiwen-mincho', css:'https://fontsapi.zeoseven.com/256/main/result.css' },
-        { name:'京华老宋体', family:'KingHwaOldSong', css:'https://fontsapi.zeoseven.com/309/main/result.css' },
-        { name:'文渊宋体 SC', family:'WenYuan Serif SC VF', css:'https://fontsapi.zeoseven.com/415/main/result.css' },
-        { name:'资源圆体', family:'Resource Han Rounded SC', css:'https://fontsapi.zeoseven.com/989/main/result.css' },
-        { name:'LXGW Bright', family:'LXGW Bright', css:'https://fontsapi.zeoseven.com/993/main/result.css' },
-        { name:'LXGW Bright Code', family:'LXGW Bright Code', css:'https://fontsapi.zeoseven.com/994/main/result.css' },
-        { name:'普推黑体', family:'PUTUI', css:'https://fontsapi.zeoseven.com/2224/main/result.css' },
-        { name:'千菅书体', family:'ChisugaShotai', css:'https://fontsapi.zeoseven.com/774/main/result.css' },
-        { name:'Y 式宋体', family:'YShiMincho CL', css:'https://fontsapi.zeoseven.com/524/main/result.css' },
-        { name:'朝华标题', family:'ZhaohuaMinA', css:'https://fontsapi.zeoseven.com/2101/main/result.css' }
+        { name:'霞鹜文楷', family:'LXGW WenKai', css:'https://fontsapi.zeoseven.com/292/main/result.css', id:'292' },
+        { name:'霞鹜臻楷', family:'LXGW ZhenKai GB', css:'https://fontsapi.zeoseven.com/2/main/result.css', id:'2' },
+        { name:'霞鹜文楷 Mono', family:'LXGW WenKai Mono', css:'https://fontsapi.zeoseven.com/293/main/result.css', id:'293' },
+        { name:'思源黑体', family:'Noto Sans CJK', css:'https://fontsapi.zeoseven.com/69/main/result.css', id:'69' },
+        { name:'思源宋体', family:'Noto Serif CJK', css:'https://fontsapi.zeoseven.com/285/main/result.css', id:'285' },
+        { name:'朱雀仿宋', family:'Zhuque Fangsong (technical preview)', css:'https://fontsapi.zeoseven.com/7/main/result.css', id:'7' },
+        { name:'梦源黑体', family:'Dream Han Sans CN W4', css:'https://fontsapi.zeoseven.com/2243/main/result.css', id:'2243' },
+        { name:'梦源宋体', family:'Dream Han Serif CN W4', css:'https://fontsapi.zeoseven.com/2244/main/result.css', id:'2244' },
+        { name:'狮尾黑体', family:'Swei Sans', css:'https://fontsapi.zeoseven.com/708/main/result.css', id:'708' },
+        { name:'台湾圆体', family:'TaiwanPearl', css:'https://fontsapi.zeoseven.com/710/main/result.css', id:'710' },
+        { name:'汇文明朝体', family:'Huiwen-mincho', css:'https://fontsapi.zeoseven.com/256/main/result.css', id:'256' },
+        { name:'京华老宋体', family:'KingHwaOldSong', css:'https://fontsapi.zeoseven.com/309/main/result.css', id:'309' },
+        { name:'文渊宋体 SC', family:'WenYuan Serif SC VF', css:'https://fontsapi.zeoseven.com/415/main/result.css', id:'415' },
+        { name:'资源圆体', family:'Resource Han Rounded SC', css:'https://fontsapi.zeoseven.com/989/main/result.css', id:'989' },
+        { name:'LXGW Bright', family:'LXGW Bright', css:'https://fontsapi.zeoseven.com/993/main/result.css', id:'993' },
+        { name:'LXGW Bright Code', family:'LXGW Bright Code', css:'https://fontsapi.zeoseven.com/994/main/result.css', id:'994' },
+        { name:'普推黑体', family:'PUTUI', css:'https://fontsapi.zeoseven.com/2224/main/result.css', id:'2224' },
+        { name:'千菅书体', family:'ChisugaShotai', css:'https://fontsapi.zeoseven.com/774/main/result.css', id:'774' },
+        { name:'Y 式宋体', family:'YShiMincho CL', css:'https://fontsapi.zeoseven.com/524/main/result.css', id:'524' },
+        { name:'朝华标题', family:'ZhaohuaMinA', css:'https://fontsapi.zeoseven.com/2101/main/result.css', id:'2101' }
     ];
 
+    let zeoCatalogReady = false;
+    let zeoCatalogLoading = null;
     const loadedFontCss = new Set();
     const loadingFontCss = new Map();
 
+    const normalizeZeoId = (href) => {
+        const m = String(href || '').match(/\/items\/([^/?#]+)\/?(?:[?#].*)?$/i);
+        return m ? m[1] : '';
+    };
+
+    const extractFontFamilyFromCss = (cssText) => {
+        const matches = String(cssText || '').match(/font-family\s*:\s*([^;}{]+)\s*;/gi) || [];
+        for (const raw of matches) {
+            const value = raw.replace(/^font-family\s*:\s*/i, '').trim();
+            if (value) return value.replace(/^['"]|['"]$/g, '');
+        }
+        return '';
+    };
+
+    const fetchWithTimeout = async (url, timeout = 8000) => {
+        const controller = new AbortController();
+        const timer = setTimeout(() => controller.abort(), timeout);
+        try {
+            const res = await fetch(url, { signal: controller.signal, credentials: 'omit', cache: 'no-store' });
+            if (!res.ok) throw new Error(`HTTP ${res.status}`);
+            return await res.text();
+        } finally {
+            clearTimeout(timer);
+        }
+    };
+
+    const mergeZeoFont = (font) => {
+        if (!font?.id || !font.name) return false;
+        const key = String(font.id);
+        const existing = ZEOSEVEN_FONTS.find(f => String(f.id) === key);
+        if (existing) {
+            if (font.family && !existing.family) existing.family = font.family;
+            return false;
+        }
+        ZEOSEVEN_FONTS.push({
+            id: key,
+            name: font.name,
+            family: font.family || `ZSFT-${key}`,
+            css: `https://fontsapi.zeoseven.com/${encodeURIComponent(key)}/main/result.css`
+        });
+        return true;
+    };
+
+    const parseZeoBrowsePage = (html) => {
+        const doc = new DOMParser().parseFromString(html, 'text/html');
+        const found = [];
+        const seen = new Set();
+        doc.querySelectorAll('a[href*="/items/"]').forEach(a => {
+            const id = normalizeZeoId(a.getAttribute('href'));
+            if (!id || seen.has(id)) return;
+            const name = (a.textContent || '').replace(/\s+/g, ' ').trim();
+            if (!name || name.length > 120) return;
+            seen.add(id);
+            found.push({ id, name });
+        });
+        return found;
+    };
+
+    const syncZeoCatalog = async () => {
+        if (zeoCatalogReady) return true;
+        if (zeoCatalogLoading) return zeoCatalogLoading;
+        zeoCatalogLoading = (async () => {
+            try {
+                // 首页先到，保证用户马上有结果；随后后台尝试抓取分页。
+                const first = await fetchWithTimeout('https://fonts.zeoseven.com/browse/', 7000);
+                let items = parseZeoBrowsePage(first);
+                const seenIds = new Set(items.map(x => x.id));
+                items.forEach(x => mergeZeoFont(x));
+                populateLrcFontSelect(UI.lrcFontSearch?.value || '');
+
+                // ZSFT 当前浏览页使用分页/查询参数时，逐页补齐。若服务端忽略 page 参数，
+                // 第二次拿到重复内容就会停止，不会持续请求。
+                let duplicatePages = 0;
+                for (let page = 2; page <= 50 && duplicatePages < 2; page++) {
+                    try {
+                        const html = await fetchWithTimeout(`https://fonts.zeoseven.com/browse/?page=${page}`, 6000);
+                        const pageItems = parseZeoBrowsePage(html);
+                        if (!pageItems.length) break;
+                        let added = 0;
+                        pageItems.forEach(x => {
+                            if (!seenIds.has(x.id)) { seenIds.add(x.id); added++; }
+                            mergeZeoFont(x);
+                        });
+                        if (!added) duplicatePages++;
+                        else duplicatePages = 0;
+                        populateLrcFontSelect(UI.lrcFontSearch?.value || '');
+                        if (pageItems.length < 10) break;
+                    } catch (_) {
+                        // 在线目录不可用时，保留内置字体，不影响播放器。
+                        break;
+                    }
+                }
+                zeoCatalogReady = true;
+                populateLrcFontSelect(UI.lrcFontSearch?.value || '');
+                return true;
+            } catch (_) {
+                // 网络不可用时直接使用内置字体库；不会阻塞或影响歌词。
+                return false;
+            } finally {
+                zeoCatalogLoading = null;
+            }
+        })();
+        return zeoCatalogLoading;
+    };
+
     const ensureZeoFontLoaded = (font) => {
-        if (!font?.css || !font?.family) return Promise.resolve(false);
+        if (!font?.css) return Promise.resolve(false);
         if (loadedFontCss.has(font.css)) return Promise.resolve(true);
         if (loadingFontCss.has(font.css)) return loadingFontCss.get(font.css);
 
@@ -1069,14 +1176,21 @@
             link.href = font.css;
             link.crossOrigin = 'anonymous';
 
-            const timer = setTimeout(() => finish(false), 5000);
+            const timer = setTimeout(() => finish(false), 7000);
             link.onload = async () => {
-                // CSS 到达后再确认字体本身可用；整个过程仍是异步的，不阻塞选择器。
                 try {
-                    if (targetDoc.fonts?.load) {
+                    // 在线目录可能只有 ID，没有 family；从 CSS 响应里取真实 family。
+                    if ((!font.family || font.family === `ZSFT-${font.id}`) && typeof fetch === 'function') {
+                        try {
+                            const cssText = await fetchWithTimeout(font.css, 5000);
+                            const family = extractFontFamilyFromCss(cssText);
+                            if (family) font.family = family;
+                        } catch (_) {}
+                    }
+                    if (targetDoc.fonts?.load && font.family) {
                         await Promise.race([
                             targetDoc.fonts.load(`16px "${font.family.replace(/"/g, '\\"')}"`),
-                            new Promise(r => setTimeout(r, 1800))
+                            new Promise(r => setTimeout(r, 1500))
                         ]);
                     }
                 } catch (_) {}
@@ -1090,14 +1204,10 @@
         return promise;
     };
 
-
     const setLrcFontVisual = (font) => {
         const family = font?.family || '';
         const safeFamily = family ? `"${family.replace(/"/g,'\\"')}"` : '';
         UI.wrapper.style.setProperty('--fm-lrc-family', safeFamily || 'var(--fm-font)');
-
-        // 强制写入 !important：原播放器的 * 规则会给每个歌词子元素设置默认字体，
-        // 单纯让父级继承是不够的，因此这里连同现有歌词子元素一起覆盖。
         const lyricRoots = [UI.outLyrics, UI.outLyricsScroll, UI.outLyricsScrollList].filter(Boolean);
         lyricRoots.forEach(root => {
             root.style.setProperty('font-family', safeFamily || 'var(--fm-font)', 'important');
@@ -1105,7 +1215,6 @@
                 el.style.setProperty('font-family', safeFamily || 'var(--fm-font)', 'important');
             });
         });
-
         if (UI.lrcFontCurrent) {
             UI.lrcFontCurrent.value = font?.name || '';
             UI.lrcFontCurrent.style.fontFamily = safeFamily || '';
@@ -1135,19 +1244,21 @@
         defaultOption.textContent = '默认字体';
         UI.lrcFontSelect.appendChild(defaultOption);
 
-        ZEOSEVEN_FONTS.filter(font => !q || `${font.name} ${font.family}`.toLowerCase().includes(q)).forEach(font => {
-            const option = targetDoc.createElement('option');
-            option.value = font.name;
-            option.textContent = font.name;
-            option.dataset.family = font.family;
-            option.dataset.css = font.css;
-            // 如果该字体已经加载，让下拉选项也尽可能用自身字体显示。
-            if (loadedFontCss.has(font.css)) option.style.fontFamily = `"${font.family.replace(/"/g,'\\"')}"`;
-            UI.lrcFontSelect.appendChild(option);
-        });
+        ZEOSEVEN_FONTS
+            .filter(font => !q || `${font.name} ${font.family}`.toLowerCase().includes(q))
+            .sort((a,b) => a.name.localeCompare(b.name, 'zh-Hans'))
+            .forEach(font => {
+                const option = targetDoc.createElement('option');
+                option.value = font.name;
+                option.textContent = font.name;
+                option.dataset.family = font.family || '';
+                option.dataset.css = font.css || '';
+                if (loadedFontCss.has(font.css) && font.family) option.style.fontFamily = `"${font.family.replace(/"/g,'\\"')}"`;
+                UI.lrcFontSelect.appendChild(option);
+            });
 
         const saved = findSavedLrcFont();
-        const desired = (saved?.name === current || saved?.name) ? saved.name : current;
+        const desired = saved?.name || current;
         if ([...UI.lrcFontSelect.options].some(o => o.value === desired)) UI.lrcFontSelect.value = desired;
         else UI.lrcFontSelect.value = '';
     };
@@ -1161,9 +1272,8 @@
         if (select) select.disabled = true;
         const ok = await ensureZeoFontLoaded(font);
         if (ok) {
-            // 选中后立即、强制应用到桌面歌词。
             applyLrcFont(font, true);
-            if (select) select.style.fontFamily = `"${font.family.replace(/"/g,'\\"')}"`;
+            if (select) select.style.fontFamily = font.family ? `"${font.family.replace(/"/g,'\\"')}"` : '';
         } else {
             API.toast('字体加载失败，请检查网络后重试');
             const saved = findSavedLrcFont();
@@ -1178,8 +1288,9 @@
 
     populateLrcFontSelect();
 
-    // 歌词是动态重建的，使用一个极轻量的 MutationObserver 确保“强制字体”不会
-    // 因为切歌、切换歌词模式、逐句动画重绘而丢失。只观察两个歌词容器，不影响播放器其它 DOM。
+    // 第一次点搜索框/开始输入时再同步完整在线目录。
+    UI.lrcFontSearch?.addEventListener('focus', () => { syncZeoCatalog(); }, { once: true });
+
     const lrcFontObserver = new targetWin.MutationObserver(() => {
         const activeFont = findSavedLrcFont();
         if (activeFont || savedSettings.lrcFontName === '默认字体') setLrcFontVisual(activeFont);
@@ -2450,6 +2561,7 @@
     UI.lrcFontSearch.oninput = () => {
         const keyword = UI.lrcFontSearch.value;
         populateLrcFontSelect(keyword);
+        if (!zeoCatalogReady) syncZeoCatalog();
     };
 
     const THEME_DEFAULT_COLORS = {
