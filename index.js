@@ -142,7 +142,9 @@
         isLyricsVisible: true,
         lastActiveLrcIndex: -1,
         isSeekingProgress: false,
-        playRequestId: 0
+        playRequestId: 0,
+        uiInitialized: false,
+        uiNeedsRender: true
     };
 
     const getCurrentPlaylist = () => STATE.playlists.find(p => p.id === STATE.currentPlaylistId) || STATE.playlists[0];
@@ -430,6 +432,16 @@
             transition: var(--fm-transition); z-index: 5; overflow: hidden;
         }
         .fm-panel.open { opacity: 1; transform: scale(1) translateY(0); pointer-events: auto; }
+
+        /* 性能测试版：避免 backdrop-filter 在 Tauri/WebView 中持续触发大面积 GPU 合成。
+           保留半透明外观，但取消实时背景模糊。 */
+        .fm-ball, .fm-panel, .fm-popover, .dot-glass {
+            backdrop-filter: none !important;
+            -webkit-backdrop-filter: none !important;
+        }
+        .fm-panel:not(.open) {
+            display: none;
+        }
 
         .fm-header { display: flex; align-items: center; padding: 16px 20px; border-bottom: 1px solid var(--fm-border); cursor: move; }
         .fm-cover-mock { width: 44px; height: 44px; border-radius: var(--fm-radius-btn); background: var(--fm-border); display: flex; justify-content: center; align-items: center; color: var(--fm-text-sub); font-size: 18px; margin-right: 12px; flex-shrink: 0; transition: var(--fm-transition); }
@@ -1257,22 +1269,12 @@
 
     UI.lrcFontReset?.addEventListener('click', resetLrcFontToDefault);
 
-    // 启动时恢复已经保存的字体；不会自动请求整个字体网站。
+    // 启动时只恢复视觉设置；真正的远程字体加载延迟到播放器打开后。
     const savedLrcFont = getSavedLrcFont();
-    if (savedLrcFont) {
-        ensureZeoFontLoaded(savedLrcFont).then(ok => {
-            if (ok) setLrcFontVisual(savedLrcFont);
-        });
-    } else {
-        setLrcFontVisual(null);
-    }
+    setLrcFontVisual(savedLrcFont || null);
 
-    const lrcFontObserver = new targetWin.MutationObserver(() => {
-        const activeFont = getSavedLrcFont();
-        if (activeFont || savedSettings.lrcFontName === '默认字体') setLrcFontVisual(activeFont);
-    });
-    if (UI.outLyrics) lrcFontObserver.observe(UI.outLyrics, { childList:true, subtree:true });
-    if (UI.outLyricsScroll) lrcFontObserver.observe(UI.outLyricsScroll, { childList:true, subtree:true });
+    // 性能优化：不再持续监听歌词 DOM。歌词更新时由现有渲染逻辑主动应用字体，
+    // 避免每次歌词节点变化都触发一次额外的 MutationObserver 回调。
 
     // ================= 页面导航 =================
     UI.themeDots.forEach(dot => dot.classList.toggle('active', dot.dataset.theme === STATE.currentTheme));
@@ -1399,7 +1401,19 @@
         const currentSize = parseInt(savedSettings.ballSize) || 50;
         
         if (STATE.isExpanded) {
-            applySettings(); 
+            UI.panel.style.display = 'flex';
+            applySettings();
+            const activeLrcFont = getSavedLrcFont();
+            if (activeLrcFont) {
+                ensureZeoFontLoaded(activeLrcFont).then(ok => {
+                    if (ok && STATE.isExpanded) setLrcFontVisual(activeLrcFont);
+                });
+            }
+
+            if (!STATE.uiInitialized || STATE.uiNeedsRender) {
+                renderListUI();
+                STATE.uiInitialized = true;
+            }
             
             // 使用实际 CSS 宽度，避免小屏 max-width 与 JS 估算不一致。
             const panelWidth = Math.min(UI.panel.offsetWidth || 400, targetWin.innerWidth - CONFIG.SAFE_MARGIN * 2);
@@ -1450,6 +1464,8 @@
             UI.panel.classList.add('open');
         } else {
             UI.panel.classList.remove('open');
+            UI.panel.style.display = 'none';
+            STATE.uiNeedsRender = false;
             UI.ball.innerHTML = '<i class="fas fa-music"></i>';
             if (STATE.isPlaying) UI.ball.classList.add('playing');
         }
@@ -1829,6 +1845,11 @@
     }
 
     function renderListUI() {
+        if (!STATE.isExpanded) {
+            STATE.uiNeedsRender = true;
+            return;
+        }
+        STATE.uiNeedsRender = false;
         renderTabs();
         UI.playlistEl.innerHTML = '';
 
@@ -2868,6 +2889,8 @@
         else playNext();
     };
     audio.ontimeupdate = () => {
+        // 播放器关闭时，音频可以继续播放，但不再驱动播放器 DOM。
+        if (!STATE.isExpanded) return;
         if (!STATE.isSeekingProgress) updateProgressUI(audio.currentTime, audio.duration);
         if (STATE.isLyricsVisible) updateLyrics();
     };
@@ -2929,7 +2952,7 @@
     // ================= 初始化 =================
     initDraggable();
     initProgressBar();
-    renderListUI(); 
+    // 不在脚本加载阶段构建歌单 DOM；第一次打开播放器时再渲染。
     
     if (startupDedupeCount > 0 || startupLimitCount > 0) {
         let msg = `[优化] 启动清理完成：`;
