@@ -17,6 +17,13 @@
         console.warn("[АрⅤ] 跨域限制，降级至当前环境。");
     }
 
+    // 关键：脚本反复重装时，先清理上一实例，避免旧播放器/旧歌词层/旧事件继续留在页面。
+    try {
+        if (typeof targetWin.__apvPlayerCleanup === 'function') targetWin.__apvPlayerCleanup();
+    } catch (e) {
+        console.warn('[ArV] 清理上一播放器实例失败', e);
+    }
+
     // ================= 核心配置 =================
     const CONFIG = {
         ID: 'st-flow-music-player-pro',
@@ -141,6 +148,7 @@
         lyricsData: [],
         isLyricsVisible: true,
         lastActiveLrcIndex: -1,
+        lastRenderedScrollIndex: -1,
         isSeekingProgress: false,
         playRequestId: 0,
         uiInitialized: false,
@@ -368,10 +376,11 @@
 
     const container = targetDoc.createElement('div');
     container.id = CONFIG.ID;
+    // 性能关键：宿主本身不再覆盖整个视口。播放器的 ball/panel 仍可通过 overflow:visible
+    // 定位到视口任意位置，但这个根节点自身只占 1×1px，避免给 SillyTavern 制造全屏固定层。
     container.style.cssText = `
         position: fixed; top: 0; left: 0;
-        width: 100%; height: 100dvh;
-        min-width: 100%; min-height: 100dvh;
+        width: 1px; height: 1px;
         overflow: visible; pointer-events: none; z-index: ${CONFIG.Z_INDEX};
     `;
     targetDoc.body.appendChild(container);
@@ -406,7 +415,7 @@
         .fm-ball {
             position: absolute; width: var(--fm-ball-size, 50px); height: var(--fm-ball-size, 50px); 
             border-radius: var(--fm-radius-ball);
-            background: var(--fm-bg); backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px);
+            background: var(--fm-bg);
             border: 1px solid var(--fm-border); box-shadow: 0 4px 12px var(--fm-shadow);
             display: flex; justify-content: center; align-items: center;
             color: var(--fm-text-main); font-size: 20px; cursor: grab; pointer-events: auto;
@@ -425,7 +434,7 @@
             max-width: calc(100vw - 40px);
             height: var(--fm-panel-height, 540px);
             max-height: calc(100dvh - 40px);
-            background: var(--fm-bg); backdrop-filter: blur(20px); -webkit-backdrop-filter: blur(20px);
+            background: var(--fm-bg);
             border: 1px solid var(--fm-border); 
             border-radius: var(--fm-radius-panel);
             box-shadow: 0 10px 30px var(--fm-shadow); display: flex; flex-direction: column;
@@ -548,7 +557,7 @@
         .dot-adaptive { background: linear-gradient(45deg, #4a90e2, #50e3c2); }
         .dot-light { background: #f0f0f0; border-color: #ccc; }
         .dot-dark { background: #222; }
-        .dot-glass { background: rgba(255,255,255,0.3); border-color: rgba(255,255,255,0.8); backdrop-filter: blur(4px); }
+        .dot-glass { background: rgba(255,255,255,0.3); border-color: rgba(255,255,255,0.8); }
 
         /* 优化歌词动画：延长持续时间，调整缓动函数，使其更柔和 */
         
@@ -1050,6 +1059,8 @@
     // ================= 独立桌面歌词渲染层 =================
     // 歌词独立于播放器 Shadow DOM，但宿主本身只占“歌词实际需要的那一小块”。
     // 不使用 100vw / 100vh，避免为了隔离歌词而重新制造全屏绘制区域。
+    const oldLyricHost = targetDoc.getElementById('apv-lyrics-host');
+    if (oldLyricHost) oldLyricHost.remove();
     const lyricHost = targetDoc.createElement('div');
     lyricHost.id = 'apv-lyrics-host';
     lyricHost.style.cssText = `
@@ -1519,6 +1530,7 @@
         const currentSize = parseInt(savedSettings.ballSize) || 50;
         
         if (STATE.isExpanded) {
+            container.style.display = 'block';
             UI.panel.style.display = 'flex';
             applySettings();
             const activeLrcFont = getSavedLrcFont();
@@ -1583,6 +1595,8 @@
         } else {
             UI.panel.classList.remove('open');
             UI.panel.style.display = 'none';
+            // 关闭后如果悬浮球也隐藏，则整个播放器宿主退出渲染树。
+            container.style.display = savedSettings.showBall === false ? 'none' : 'block';
             STATE.uiNeedsRender = false;
             UI.ball.innerHTML = '<i class="fas fa-music"></i>';
             if (STATE.isPlaying) UI.ball.classList.add('playing');
@@ -2147,7 +2161,8 @@
         renderListUI();
 
         audio.pause(); audio.src = '';
-        STATE.lyricsData = []; UI.outLyrics.innerHTML = ''; UI.outLyricsScrollList.innerHTML = ''; STATE.lastActiveLrcIndex = -1;
+        STATE.lyricsData = []; UI.outLyrics.innerHTML = ''; UI.outLyricsScrollList.innerHTML = ''; STATE.lastActiveLrcIndex = -1; STATE.lastRenderedScrollIndex = -1;
+        STATE.lastRenderedScrollIndex = -1;
         if (lrcRafId) cancelAnimationFrame(lrcRafId);
         stopLyricsTimer();
         updateProgressUI(0, 0);
@@ -2284,11 +2299,18 @@
     function renderScrollActiveLine(activeIdx) {
         const lineEls = UI.outLyricsScrollList.children;
         if (lineEls.length === 0) return;
-        for (let i = 0; i < lineEls.length; i++) {
-            lineEls[i].classList.remove('current', 'near');
-            if (i === activeIdx) lineEls[i].classList.add('current');
-            else if (Math.abs(i - activeIdx) === 1) lineEls[i].classList.add('near');
-        }
+        const prev = STATE.lastRenderedScrollIndex;
+        // 只清理上一行附近的状态，再设置当前行附近状态。
+        // 原版每换一句都会遍历整首歌词的所有 DOM 节点；长歌单/长歌词时没有必要。
+        [prev - 1, prev, prev + 1, activeIdx - 1, activeIdx, activeIdx + 1].forEach(i => {
+            if (i >= 0 && i < lineEls.length) lineEls[i].classList.remove('current', 'near');
+        });
+        [-1, 0, 1].forEach(delta => {
+            const i = activeIdx + delta;
+            if (i < 0 || i >= lineEls.length) return;
+            lineEls[i].classList.add(delta === 0 ? 'current' : 'near');
+        });
+        STATE.lastRenderedScrollIndex = activeIdx;
         const activeLine = lineEls[activeIdx];
         if (!activeLine) return;
         const containerHeight = UI.outLyricsScroll.clientHeight;
@@ -2554,6 +2576,7 @@
         savedSettings.lrcMode = 'plain';
         updateLrcModeBtns();
         STATE.lastActiveLrcIndex = -1;
+        STATE.lastRenderedScrollIndex = -1;
         if (lrcRafId) { cancelAnimationFrame(lrcRafId); lrcRafId = null; }
         syncLyricsVisibility();
         if (STATE.isLyricsVisible && !audio.paused) { updateLyrics(); scheduleLyricsUpdate(); }
@@ -2565,6 +2588,7 @@
         savedSettings.lrcMode = 'popup';
         updateLrcModeBtns();
         STATE.lastActiveLrcIndex = -1;
+        STATE.lastRenderedScrollIndex = -1;
         syncLyricsVisibility();
         if (STATE.isLyricsVisible && !audio.paused) { updateLyrics(); scheduleLyricsUpdate(); }
         applySettings();
@@ -2574,6 +2598,7 @@
         savedSettings.lrcMode = 'scroll';
         updateLrcModeBtns();
         STATE.lastActiveLrcIndex = -1;
+        STATE.lastRenderedScrollIndex = -1;
         syncLyricsVisibility();
         if (STATE.lyricsData.length > 0) buildScrollLyricsDom();
         if (STATE.isLyricsVisible && !audio.paused) { updateLyrics(); scheduleLyricsUpdate(); }
@@ -2584,6 +2609,7 @@
         savedSettings.lrcMode = 'fall';
         updateLrcModeBtns();
         STATE.lastActiveLrcIndex = -1;
+        STATE.lastRenderedScrollIndex = -1;
         syncLyricsVisibility();
         if (STATE.isLyricsVisible && !audio.paused) { updateLyrics(); scheduleLyricsUpdate(); }
         applySettings();
@@ -2831,6 +2857,8 @@
         UI.wrapper.style.setProperty('--fm-ball-size', `${savedSettings.ballSize}px`);
         UI.ballVisibleToggle.checked = savedSettings.showBall !== false;
         UI.wrapper.classList.toggle('ball-hidden', savedSettings.showBall === false);
+        // 隐藏悬浮球且播放器关闭时，连根宿主都从渲染树中拿掉。打开时再恢复。
+        if (!STATE.isExpanded) container.style.display = savedSettings.showBall === false ? 'none' : 'block';
         UI.wrapper.style.setProperty('--fm-custom-color', savedSettings.customColor);
         
         if (savedSettings.shapeStyle === 'square') {
@@ -3128,22 +3156,47 @@
 
     // SillyTavern 的输入框扩展菜单（扳手/魔法棒菜单）只需要放一个入口，
     // 点击入口后打开播放器自己的完整面板，不把播放器 UI 塞进菜单。
+    let menuRetryTimer = null;
+    let menuRetryStopTimer = null;
     if (!installSillyTavernWandButton()) {
-        const retry = setInterval(() => {
-            if (installSillyTavernWandButton()) clearInterval(retry);
+        menuRetryTimer = setInterval(() => {
+            if (installSillyTavernWandButton()) {
+                clearInterval(menuRetryTimer);
+                menuRetryTimer = null;
+            }
         }, 500);
-        setTimeout(() => clearInterval(retry), 15000);
+        menuRetryStopTimer = setTimeout(() => {
+            if (menuRetryTimer) clearInterval(menuRetryTimer);
+            menuRetryTimer = null;
+            menuRetryStopTimer = null;
+        }, 15000);
     }
 
-    targetWin.addEventListener('pagehide', () => {
-        if (audio) { audio.pause(); audio.src = ''; audio = null; }
-        if (lrcRafId) cancelAnimationFrame(lrcRafId);
-        stopLyricsTimer();
-        saveSettings();
-        clearTimeout(settingsSaveTimer);
-        const c = targetDoc.getElementById(CONFIG.ID);
-        if (c) c.remove();
-        delete targetWin._flowMusicToggle;
-    });
+    // 实例级清理：更新/重装脚本时先清理上一实例，防止 audio、pagehide、计时器和独立歌词层累积。
+    const cleanupPlayerInstance = () => {
+        try { if (audio) { audio.pause(); audio.src = ''; audio = null; } } catch (_) {}
+        try { if (lrcRafId) cancelAnimationFrame(lrcRafId); } catch (_) {}
+        try { stopLyricsTimer(); } catch (_) {}
+        try { clearTimeout(settingsSaveTimer); } catch (_) {}
+        try { if (menuRetryTimer) clearInterval(menuRetryTimer); } catch (_) {}
+        try { if (menuRetryStopTimer) clearTimeout(menuRetryStopTimer); } catch (_) {}
+        try { saveSettings(); } catch (_) {}
+        try { targetDoc.querySelectorAll('link[id^="fm-zeofont-"]').forEach(link => link.remove()); } catch (_) {}
+        try { targetDoc.querySelectorAll('link[id^="fm-zeofont-inspect-"]').forEach(link => link.remove()); } catch (_) {}
+        try {
+            const c = targetDoc.getElementById(CONFIG.ID);
+            if (c) c.remove();
+            const oldLyrics = targetDoc.getElementById('apv-lyrics-host');
+            if (oldLyrics) oldLyrics.remove();
+            const menuItem = targetDoc.getElementById('arv_terminal_wand_container');
+            if (menuItem) menuItem.remove();
+        } catch (_) {}
+        try { delete targetWin._flowMusicToggle; } catch (_) {}
+        if (targetWin.__apvPlayerCleanup === cleanupPlayerInstance) {
+            try { delete targetWin.__apvPlayerCleanup; } catch (_) {}
+        }
+    };
+    targetWin.__apvPlayerCleanup = cleanupPlayerInstance;
+    targetWin.addEventListener('pagehide', cleanupPlayerInstance, { once: true });
 
 })();
