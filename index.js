@@ -596,11 +596,20 @@
             font-family: var(--fm-lrc-family, var(--fm-font)) !important;
         }
 
+        /* 性能修复：桌面歌词本体只创建“歌词实际占用的渲染区域”。
+           之前这里使用 absolute + 全屏播放器容器，歌词会跟着 100dvh 的父层参与大范围布局/绘制。
+           改为 fixed 后，歌词自身独立定位到视口，只对实际文字区域进行布局与绘制。 */
         .fm-out-lyrics {
-            position: absolute;
+            position: fixed;
             bottom: calc(var(--fm-lrc-bottom, 80px) + env(safe-area-inset-bottom, 0px));
-            max-height: 40dvh; overflow: hidden; left: 50%; transform: translateX(-50%);
+            left: 50%; transform: translateX(-50%);
             width: max-content; max-width: 80vw; min-width: 60px; min-height: 24px;
+            max-height: 40dvh;
+            height: auto;
+            overflow: hidden;
+            box-sizing: border-box;
+            contain: layout paint style;
+            isolation: isolate;
             text-align: center; pointer-events: none; z-index: 2147483647;
             display: flex; flex-direction: column; align-items: center; gap: 4px;
             opacity: 0; transition: opacity 0.5s, bottom 0.2s;
@@ -625,8 +634,8 @@
             animation: lrc-fall-in 0.8s cubic-bezier(0.22, 1, 0.36, 1) forwards;
         }
         @keyframes lrc-fall-in { 
-            0% { opacity: 0; transform: translateY(-40px); filter: blur(4px); }
-            100% { opacity: 1; transform: translateY(0); filter: blur(0); } 
+            0% { opacity: 0; transform: translateY(-40px); }
+            100% { opacity: 1; transform: translateY(0); } 
         }
         /* 翻译专用渐现动画：无位移，仅透明度和模糊变化 */
         .lrc-trans-fade {
@@ -634,26 +643,32 @@
             animation: lrc-trans-fade-in 0.8s cubic-bezier(0.22, 1, 0.36, 1) forwards;
         }
         @keyframes lrc-trans-fade-in {
-            0% { opacity: 0; filter: blur(4px); }
-            100% { opacity: 1; filter: blur(0); }
+            0% { opacity: 0; }
+            100% { opacity: 1; }
         }
         /* 优化退场动画：原地模糊消散，更自然柔和 */
         @keyframes lrc-fade-out {
-            0% { opacity: 1; transform: scale(1); filter: blur(0); }
-            100% { opacity: 0; transform: scale(0.95); filter: blur(8px); }
+            0% { opacity: 1; transform: scale(1); }
+            100% { opacity: 0; transform: scale(0.95); }
         }
         .lrc-highlight {
             color: #ff4d4f !important;
             text-shadow: 0 0 8px rgba(255, 77, 79, 0.6), 0 2px 4px rgba(0,0,0,0.5) !important;
         }
 
+        /* 三行滚动同样独立成一个小型 fixed 渲染区域，不再继承全屏 absolute 布局。 */
         .fm-out-lyrics-scroll {
-            position: absolute;
+            position: fixed;
             bottom: calc(var(--fm-lrc-bottom, 80px) + env(safe-area-inset-bottom, 0px));
-            max-height: 40dvh; overflow: hidden; left: 50%; transform: translateX(-50%);
+            left: 50%; transform: translateX(-50%);
             width: max-content; max-width: 80vw; min-width: 60px;
             height: calc(var(--fm-lrc-font, 16px) * 5.4);
-            overflow: hidden; pointer-events: none; z-index: 2147483647;
+            max-height: 40dvh;
+            overflow: hidden;
+            box-sizing: border-box;
+            contain: layout paint style;
+            isolation: isolate;
+            pointer-events: none; z-index: 2147483647;
             opacity: 0; transition: opacity 0.5s, bottom 0.2s;
             -webkit-mask-image: linear-gradient(to bottom, transparent 0%, black 30%, black 70%, transparent 100%);
             mask-image: linear-gradient(to bottom, transparent 0%, black 30%, black 70%, transparent 100%);
