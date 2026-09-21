@@ -612,25 +612,32 @@
             font-family: var(--fm-lrc-family, var(--fm-font)) !important;
         }
 
-        /* 性能修复：桌面歌词本体只创建“歌词实际占用的渲染区域”。
-           之前这里使用 absolute + 全屏播放器容器，歌词会跟着 100dvh 的父层参与大范围布局/绘制。
-           改为 fixed 后，歌词自身独立定位到视口，只对实际文字区域进行布局与绘制。 */
-        .fm-out-lyrics {
+        /* 歌词独立渲染层：从播放器 wrapper 中拆出，并限制布局/绘制边界。 */
+        #fm-lyrics-host {
             position: fixed;
+            left: 50%;
             bottom: calc(var(--fm-lrc-bottom, 80px) + env(safe-area-inset-bottom, 0px));
-            left: 50%; transform: translateX(-50%);
-            width: max-content; max-width: 80vw; min-width: 60px; min-height: 24px;
+            width: max-content;
+            max-width: 80vw;
+            min-width: 60px;
             max-height: 40dvh;
-            height: auto;
-            overflow: hidden;
-            box-sizing: border-box;
+            overflow: visible;
+            transform: translateX(-50%);
+            pointer-events: none;
+            z-index: 2147483647;
             contain: layout paint style;
             isolation: isolate;
-            text-align: center; pointer-events: none; z-index: 2147483647;
-            display: flex; flex-direction: column; align-items: center; gap: 4px;
-            opacity: 0; transition: opacity 0.5s, bottom 0.2s;
         }
-        .fm-out-lyrics.show { opacity: 1; }
+        .fm-out-lyrics {
+            position: relative;
+            left: auto; bottom: auto; transform: none;
+            width: 100%; max-width: 100%; min-width: 60px; min-height: 24px;
+            max-height: 40dvh; height: auto;
+            overflow: hidden; box-sizing: border-box;
+            text-align: center; pointer-events: none;
+            display: flex; flex-direction: column; align-items: center; gap: 4px;
+            opacity: 0; transition: opacity 0.5s;
+        }
         .fm-lrc-line { font-size: var(--fm-lrc-font, 16px); font-weight: bold; color: var(--fm-accent); text-shadow: 0 2px 8px var(--fm-shadow), 0 0 2px rgba(0,0,0,0.5); line-height: 1.4; }
         .fm-lrc-plain-line { font-size: var(--fm-lrc-font, 16px); font-weight: bold; color: var(--fm-accent); line-height: 1.4; text-shadow: 0 2px 8px var(--fm-shadow), 0 0 2px rgba(0,0,0,0.5); }
         .fm-lrc-plain-trans { margin-top: 4px; }
@@ -672,24 +679,18 @@
             text-shadow: 0 0 8px rgba(255, 77, 79, 0.6), 0 2px 4px rgba(0,0,0,0.5) !important;
         }
 
-        /* 三行滚动同样独立成一个小型 fixed 渲染区域，不再继承全屏 absolute 布局。 */
         .fm-out-lyrics-scroll {
-            position: fixed;
-            bottom: calc(var(--fm-lrc-bottom, 80px) + env(safe-area-inset-bottom, 0px));
-            left: 50%; transform: translateX(-50%);
-            width: max-content; max-width: 80vw; min-width: 60px;
+            position: relative;
+            left: auto; bottom: auto; transform: none;
+            width: 100%; max-width: 100%; min-width: 60px;
             height: calc(var(--fm-lrc-font, 16px) * 5.4);
             max-height: 40dvh;
-            overflow: hidden;
-            box-sizing: border-box;
-            contain: layout paint style;
-            isolation: isolate;
-            pointer-events: none; z-index: 2147483647;
-            opacity: 0; transition: opacity 0.5s, bottom 0.2s;
+            overflow: hidden; box-sizing: border-box;
+            pointer-events: none;
+            opacity: 0; transition: opacity 0.5s;
             -webkit-mask-image: linear-gradient(to bottom, transparent 0%, black 30%, black 70%, transparent 100%);
             mask-image: linear-gradient(to bottom, transparent 0%, black 30%, black 70%, transparent 100%);
         }
-        .fm-out-lyrics-scroll.show { opacity: 1; }
         .fm-lrc-scroll-list { display: flex; flex-direction: column; align-items: center; transition: transform 0.45s cubic-bezier(0.25,0.8,0.25,1); }
         .fm-lrc-scroll-line {
             font-size: var(--fm-lrc-font, 16px); line-height: 1.8; color: var(--fm-text-sub); opacity: 0.35;
@@ -999,13 +1000,22 @@
 
 
         <div class="fm-pop-menu" id="fm-pop-menu"></div>
-        <div class="fm-out-lyrics show" id="fm-out-lyrics"></div>
-        <div class="fm-out-lyrics-scroll show" id="fm-out-lyrics-scroll"><div class="fm-lrc-scroll-list" id="fm-lrc-scroll-list"></div></div>
     `;
     shadow.appendChild(wrapper);
 
+    // 歌词是独立渲染层，不再作为播放器 wrapper 的子节点。
+    const lyricHost = targetDoc.createElement('div');
+    lyricHost.id = 'fm-lyrics-host';
+    lyricHost.className = `theme-${STATE.currentTheme}`;
+    lyricHost.innerHTML = `
+        <div class="fm-out-lyrics show" id="fm-out-lyrics"></div>
+        <div class="fm-out-lyrics-scroll show" id="fm-out-lyrics-scroll"><div class="fm-lrc-scroll-list" id="fm-lrc-scroll-list"></div></div>
+    `;
+    shadow.appendChild(lyricHost);
+
     const UI = {
         wrapper: wrapper,
+        lyricHost: lyricHost,
         ball: wrapper.querySelector('#fm-ball'),
         panel: wrapper.querySelector('#fm-panel'),
         closeBtn: wrapper.querySelector('#fm-close'),
@@ -1035,8 +1045,8 @@
         lrcFontUrl: wrapper.querySelector('#fm-lrc-font-url'),
         lrcFontImport: wrapper.querySelector('#fm-lrc-font-import'),
         lrcFontReset: wrapper.querySelector('#fm-lrc-font-reset'),
-        outLyricsScroll: wrapper.querySelector('#fm-out-lyrics-scroll'),
-        outLyricsScrollList: wrapper.querySelector('#fm-lrc-scroll-list'),
+        outLyricsScroll: lyricHost.querySelector('#fm-out-lyrics-scroll'),
+        outLyricsScrollList: lyricHost.querySelector('#fm-lrc-scroll-list'),
         sourceSelect: wrapper.querySelector('#fm-source-select'),
         input: wrapper.querySelector('#fm-input'),
         addBtn: wrapper.querySelector('#fm-add'),
@@ -1054,7 +1064,7 @@
         ratioBtn: wrapper.querySelector('#fm-bg-btn-ratio'),
         bgBlurSlider: wrapper.querySelector('#fm-bg-blur'),
         bgBrightnessSlider: wrapper.querySelector('#fm-bg-brightness'),
-        outLyrics: wrapper.querySelector('#fm-out-lyrics'),
+        outLyrics: lyricHost.querySelector('#fm-out-lyrics'),
         progressTrack: wrapper.querySelector('#fm-progress-track'),
         progressFill: wrapper.querySelector('#fm-progress-fill'),
         progressThumb: wrapper.querySelector('#fm-progress-thumb'),
@@ -1183,6 +1193,7 @@
         const family = font?.family || '';
         const safeFamily = family ? `"${family.replace(/"/g,'\\"')}"` : '';
         UI.wrapper.style.setProperty('--fm-lrc-family', safeFamily || 'var(--fm-font)');
+        UI.lyricHost.style.setProperty('--fm-lrc-family', safeFamily || 'var(--fm-font)');
         const lyricRoots = [UI.outLyrics, UI.outLyricsScroll, UI.outLyricsScrollList].filter(Boolean);
         lyricRoots.forEach(root => {
             root.style.setProperty('font-family', safeFamily || 'var(--fm-font)', 'important');
@@ -2595,6 +2606,7 @@
             STATE.currentTheme = dot.dataset.theme;
             savedSettings.theme = STATE.currentTheme;
             UI.wrapper.className = `theme-${STATE.currentTheme}`;
+            UI.lyricHost.className = `theme-${STATE.currentTheme}`;
             
             // 切换主题时，恢复该主题的默认强调色
             const defColor = THEME_DEFAULT_COLORS[STATE.currentTheme];
@@ -2708,6 +2720,7 @@
 
     const applySettings = (persist = true) => {
 
+        UI.lyricHost.className = `theme-${STATE.currentTheme}`;
         UI.wrapper.style.setProperty('--fm-ball-size', `${savedSettings.ballSize}px`);
         UI.ballVisibleToggle.checked = savedSettings.showBall !== false;
         UI.wrapper.classList.toggle('ball-hidden', savedSettings.showBall === false);
@@ -2740,6 +2753,8 @@
         UI.wrapper.style.setProperty('--fm-bg-brightness', `${savedSettings.bgBrightness}%`);
         UI.wrapper.style.setProperty('--fm-lrc-font', `${savedSettings.lrcFont}px`);
         UI.wrapper.style.setProperty('--fm-lrc-bottom', `${savedSettings.lrcBottom}px`);
+        UI.lyricHost.style.setProperty('--fm-lrc-font', `${savedSettings.lrcFont}px`);
+        UI.lyricHost.style.setProperty('--fm-lrc-bottom', `${savedSettings.lrcBottom}px`);
         const savedLrcFont = getSavedLrcFont();
         if (savedLrcFont) {
             ensureZeoFontLoaded(savedLrcFont).then((ok) => {
@@ -2763,8 +2778,10 @@
         const defColor = THEME_DEFAULT_COLORS[STATE.currentTheme];
         if (STATE.currentTheme !== 'adaptive' && savedSettings.customColor && savedSettings.customColor !== defColor) {
             UI.wrapper.style.setProperty('--fm-accent', savedSettings.customColor);
+            UI.lyricHost.style.setProperty('--fm-accent', savedSettings.customColor);
         } else {
             UI.wrapper.style.removeProperty('--fm-accent');
+            UI.lyricHost.style.removeProperty('--fm-accent');
         }
         
         applyDecoration();
