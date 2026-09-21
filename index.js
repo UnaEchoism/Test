@@ -572,6 +572,9 @@
         .fm-lrc-font-url:focus { border-color:var(--fm-accent); }
         .fm-lrc-font-import { flex:0 0 auto; height:32px; border:0; border-radius:var(--fm-radius-input); padding:0 11px; background:var(--fm-accent); color:#fff; font-size:11px; cursor:pointer; }
         .fm-lrc-font-import:disabled { opacity:.55; cursor:wait; }
+        .fm-lrc-font-reset { width:100%; height:32px; margin-top:7px; border:0; border-radius:9px; background:rgba(0,0,0,.045); color:var(--fm-text-sub); cursor:pointer; font-size:10px; transition:background .18s ease,color .18s ease; }
+        .fm-lrc-font-reset:hover { background:rgba(0,0,0,.08); color:var(--fm-text-main); }
+        .fm-lrc-font-reset:disabled { opacity:.55; cursor:default; }
         .fm-lrc-font-hint { font-size:9px; color:var(--fm-text-sub); line-height:1.45; }
 
         /* 强制把自定义字体应用到桌面歌词本体。播放器其它文字完全不受影响。
@@ -893,6 +896,7 @@
                                             <input class="fm-lrc-font-url" id="fm-lrc-font-url" type="url" placeholder="粘贴 ZeoSeven 字体详情页 URL" autocomplete="off" aria-label="ZeoSeven 字体网址">
                                             <button class="fm-lrc-font-import" id="fm-lrc-font-import" type="button">导入</button>
                                         </div>
+                                        <button class="fm-lrc-font-reset" id="fm-lrc-font-reset" type="button">恢复默认字体</button>
                                         <div class="fm-lrc-font-hint">例如：https://fonts.zeoseven.com/items/217/　只会应用到桌面歌词</div>
                                     </div>
                                 </div>
@@ -987,6 +991,7 @@
         lrcFontCurrent: wrapper.querySelector('#fm-lrc-font-current'),
         lrcFontUrl: wrapper.querySelector('#fm-lrc-font-url'),
         lrcFontImport: wrapper.querySelector('#fm-lrc-font-import'),
+        lrcFontReset: wrapper.querySelector('#fm-lrc-font-reset'),
         outLyricsScroll: wrapper.querySelector('#fm-out-lyrics-scroll'),
         outLyricsScrollList: wrapper.querySelector('#fm-lrc-scroll-list'),
         sourceSelect: wrapper.querySelector('#fm-source-select'),
@@ -1169,6 +1174,30 @@
         };
     };
 
+    // 恢复播放器原本的桌面歌词字体：清除当前自定义字体样式与保存项，
+    // 但不影响其他外观、歌词字号/位置、歌单或播放器字体。
+    const resetLrcFontToDefault = () => {
+        try {
+            targetDoc.querySelectorAll('link[id^="fm-zeofont-"]').forEach(link => {
+                try { link.remove(); } catch (_) {}
+            });
+            targetDoc.querySelectorAll('link[id^="fm-zeofont-inspect-"]').forEach(link => {
+                try { link.remove(); } catch (_) {}
+            });
+        } catch (_) {}
+
+        loadedFontCss.clear();
+        loadingFontCss.clear();
+        savedSettings.lrcFontName = '默认字体';
+        savedSettings.lrcFontFamily = '';
+        savedSettings.lrcFontCss = '';
+        savedSettings.lrcFontId = '';
+        savedSettings.lrcFontUrl = '';
+        if (UI.lrcFontUrl) UI.lrcFontUrl.value = '';
+        applyLrcFont(null, true);
+        API.toast('已恢复默认字体');
+    };
+
     const importZeoSevenFont = async () => {
         const raw = UI.lrcFontUrl?.value.trim();
         if (!raw) { API.toast('请先粘贴 ZeoSeven 字体网址'); return; }
@@ -1225,6 +1254,8 @@
     UI.lrcFontUrl?.addEventListener('keydown', (e) => {
         if (e.key === 'Enter') guardedImportZeoSevenFont();
     });
+
+    UI.lrcFontReset?.addEventListener('click', resetLrcFontToDefault);
 
     // 启动时恢复已经保存的字体；不会自动请求整个字体网站。
     const savedLrcFont = getSavedLrcFont();
