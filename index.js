@@ -1020,52 +1020,67 @@
     const loadedFontCss = new Set();
     const loadingFontCss = new Map();
 
-    const fetchWithTimeout = async (url, timeout = 7000) => {
-        const controller = new AbortController();
-        const timer = setTimeout(() => controller.abort(), timeout);
+    // 只在用户点击“导入”后加载字体 CSS。不要 fetch ZeoSeven 页面：
+    // Tauri/WebView 对跨域 fetch 的限制可能导致明明字体 CSS 能加载，却拿不到文本。
+    const extractFontFamilyFromRules = (rules) => {
         try {
-            const res = await fetch(url, { signal: controller.signal, credentials: 'omit', cache: 'no-store' });
-            if (!res.ok) throw new Error(`HTTP ${res.status}`);
-            return await res.text();
-        } finally { clearTimeout(timer); }
-    };
-
-    const extractFontFamilyFromCss = (cssText) => {
-        const matches = String(cssText || '').match(/font-family\s*:\s*([^;}{]+)\s*;/gi) || [];
-        for (const raw of matches) {
-            const value = raw.replace(/^font-family\s*:\s*/i, '').trim();
-            if (value) return value.replace(/^['"]|['"]$/g, '');
-        }
+            for (const rule of Array.from(rules || [])) {
+                if (rule.type === targetWin.CSSRule.FONT_FACE_RULE || rule.cssText?.startsWith('@font-face')) {
+                    const family = rule.style?.getPropertyValue('font-family') || '';
+                    if (family.trim()) return family.trim().replace(/^['"]|['"]$/g, '');
+                }
+                if (rule.cssRules) {
+                    const nested = extractFontFamilyFromRules(rule.cssRules);
+                    if (nested) return nested;
+                }
+            }
+        } catch (_) {}
         return '';
     };
+
+    const loadZeoCssAndReadFamily = (cssUrl, timeout = 7000) => new Promise((resolve) => {
+        let settled = false;
+        const finish = (family) => {
+            if (settled) return;
+            settled = true;
+            if (timer) clearTimeout(timer);
+            resolve(family || '');
+        };
+        const id = 'fm-zeofont-inspect-' + btoa(unescape(encodeURIComponent(cssUrl))).replace(/[^a-zA-Z0-9]/g,'').slice(-28);
+        const old = targetDoc.getElementById(id);
+        if (old) {
+            try { finish(extractFontFamilyFromRules(old.sheet?.cssRules)); return; } catch (_) {}
+        }
+        const link = targetDoc.createElement('link');
+        link.id = id;
+        link.rel = 'stylesheet';
+        link.href = cssUrl;
+        link.crossOrigin = 'anonymous';
+        const timer = setTimeout(() => finish(''), timeout);
+        link.onload = () => {
+            let family = '';
+            try { family = extractFontFamilyFromRules(link.sheet?.cssRules); } catch (_) {}
+            finish(family);
+        };
+        link.onerror = () => finish('');
+        (targetDoc.head || targetDoc.documentElement).appendChild(link);
+    });
 
     const parseZeoSevenUrl = (rawUrl) => {
         let url;
         try { url = new URL(String(rawUrl || '').trim()); } catch (_) { return null; }
         const host = url.hostname.toLowerCase();
         if (host !== 'fonts.zeoseven.com' && host !== 'www.fonts.zeoseven.com' && host !== 'fontsapi.zeoseven.com') return null;
-
         if (host === 'fonts.zeoseven.com' || host === 'www.fonts.zeoseven.com') {
             const m = url.pathname.match(/^\/items\/([^/]+)\/?$/i);
             if (!m) return null;
             const id = decodeURIComponent(m[1]);
-            return {
-                id,
-                css: `https://fontsapi.zeoseven.com/${encodeURIComponent(id)}/main/result.css`,
-                pageUrl: `https://fonts.zeoseven.com/items/${encodeURIComponent(id)}/`
-            };
+            return { id, css: `https://fontsapi.zeoseven.com/${encodeURIComponent(id)}/main/result.css`, pageUrl: `https://fonts.zeoseven.com/items/${encodeURIComponent(id)}/` };
         }
-
         const m = url.pathname.match(/^\/([^/]+)\/main\/result\.css$/i);
         if (!m) return null;
         const id = decodeURIComponent(m[1]);
         return { id, css: url.href, pageUrl: `https://fonts.zeoseven.com/items/${encodeURIComponent(id)}/` };
-    };
-
-    const extractZeoFontName = (html) => {
-        const m = String(html || '').match(/<h1[^>]*>([\s\S]*?)<\/h1>/i);
-        if (!m) return '';
-        return m[1].replace(/<[^>]+>/g, ' ').replace(/&nbsp;/gi, ' ').replace(/\s+/g, ' ').trim();
     };
 
     const ensureZeoFontLoaded = (font) => {
@@ -1164,36 +1179,22 @@
         const btn = UI.lrcFontImport;
         if (btn) { btn.disabled = true; btn.textContent = '加载中'; }
         try {
-            let cssText = '';
-            try { cssText = await fetchWithTimeout(parsed.css, 6000); } catch (_) {}
-            let family = extractFontFamilyFromCss(cssText);
-
-            // CSS 已能拿到 family 时无需再请求字体详情页；只有拿不到时才访问详情页。
-            let name = family || `ZeoSeven 字体 #${parsed.id}`;
+            // 关键：直接加载 FontsAPI CSS，再从已经加载的 stylesheet 读取 @font-face。
+            // 不再 fetch ZeoSeven 页面，避免 Tauri/WebView 的跨域 fetch 导致导入失败。
+            const family = await loadZeoCssAndReadFamily(parsed.css, 7000);
             if (!family) {
-                try {
-                    const html = await fetchWithTimeout(parsed.pageUrl, 6000);
-                    name = extractZeoFontName(html) || name;
-                } catch (_) {}
-            } else {
-                try {
-                    const html = await fetchWithTimeout(parsed.pageUrl, 5000);
-                    name = extractZeoFontName(html) || name;
-                } catch (_) {}
-            }
-
-            if (!family) {
-                API.toast('无法读取该字体的 font-family，请检查字体网址');
+                API.toast('字体 CSS 已请求，但没有读取到 font-family；请检查该字体的 FontsAPI 是否可用');
                 return;
             }
 
+            const name = family;
             const font = { id: parsed.id, name, family, css: parsed.css, pageUrl: parsed.pageUrl };
             const ok = await ensureZeoFontLoaded(font);
             if (!ok) { API.toast('字体加载失败，请检查网络后重试'); return; }
 
             applyLrcFont(font, true);
             if (UI.lrcFontUrl) UI.lrcFontUrl.value = parsed.pageUrl;
-            API.toast(`已应用：${name}`);
+            API.toast(`已导入并应用：${name}`);
         } catch (err) {
             console.warn('[ArV] ZeoSeven font import failed:', err);
             API.toast('字体导入失败，请检查网址和网络连接');
