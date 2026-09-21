@@ -1048,18 +1048,17 @@
         };
         const id = 'fm-zeofont-inspect-' + btoa(unescape(encodeURIComponent(cssUrl))).replace(/[^a-zA-Z0-9]/g,'').slice(-28);
         const old = targetDoc.getElementById(id);
+        // 每次导入都重新挂载 CSS link，避免旧 stylesheet 在 WebView 中处于
+        // 半加载/不可读状态时，把后续导入卡在“加载中”。
+        if (old) {
+            try { old.remove(); } catch (_) {}
+        }
         const link = targetDoc.createElement('link');
         link.id = id;
         link.rel = 'stylesheet';
         link.href = cssUrl;
         link.crossOrigin = 'anonymous';
         const timer = setTimeout(() => finish(''), timeout);
-        if (old) {
-            try {
-                const family = extractFontFamilyFromRules(old.sheet?.cssRules);
-                if (family) { finish(family); return; }
-            } catch (_) {}
-        }
         link.onload = () => {
             let family = '';
             try { family = extractFontFamilyFromRules(link.sheet?.cssRules); } catch (_) {}
@@ -1170,11 +1169,7 @@
         };
     };
 
-    // 防止误点/连点导致多个导入流程同时运行，尤其是字体 CSS 已存在时。
-    let isImportingZeoFont = false;
-
     const importZeoSevenFont = async () => {
-        if (isImportingZeoFont) return;
         const raw = UI.lrcFontUrl?.value.trim();
         if (!raw) { API.toast('请先粘贴 ZeoSeven 字体网址'); return; }
         const parsed = parseZeoSevenUrl(raw);
@@ -1184,7 +1179,6 @@
         }
 
         const btn = UI.lrcFontImport;
-        isImportingZeoFont = true;
         if (btn) { btn.disabled = true; btn.textContent = '加载中'; }
         try {
             // 关键：直接加载 FontsAPI CSS，再从已经加载的 stylesheet 读取 @font-face。
@@ -1207,17 +1201,29 @@
             console.warn('[ArV] ZeoSeven font import failed:', err);
             API.toast('字体导入失败，请检查网址和网络连接');
         } finally {
-            isImportingZeoFont = false;
-            if (btn) {
-                btn.disabled = false;
-                btn.textContent = '导入';
-            }
+            if (btn) { btn.disabled = false; btn.textContent = '导入'; }
         }
     };
 
-    UI.lrcFontImport?.addEventListener('click', importZeoSevenFont);
+    // 防止误点/连点导致字体导入流程重复启动；不会触碰歌单导入按钮。
+    let isImportingZeoFont = false;
+    const originalImportZeoSevenFont = importZeoSevenFont;
+    const guardedImportZeoSevenFont = async () => {
+        if (isImportingZeoFont) return;
+        isImportingZeoFont = true;
+        try {
+            await originalImportZeoSevenFont();
+        } finally {
+            isImportingZeoFont = false;
+            if (UI.lrcFontImport) {
+                UI.lrcFontImport.disabled = false;
+                UI.lrcFontImport.textContent = '导入';
+            }
+        }
+    };
+    UI.lrcFontImport?.addEventListener('click', guardedImportZeoSevenFont);
     UI.lrcFontUrl?.addEventListener('keydown', (e) => {
-        if (e.key === 'Enter') importZeoSevenFont();
+        if (e.key === 'Enter') guardedImportZeoSevenFont();
     });
 
     // 启动时恢复已经保存的字体；不会自动请求整个字体网站。
