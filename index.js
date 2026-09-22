@@ -391,7 +391,14 @@
         /* 只做 style containment。不能用 strict/layout/paint：这个 1×1 宿主允许内部 fixed UI 溢出到视口。 */
         contain: style;
     `;
-    targetDoc.body.appendChild(container);
+
+    // 懒挂载：播放器完全隐藏时，连这个 fixed 宿主都不留在 document.body。
+    const ensureContainerMounted = () => {
+        if (!container.isConnected && targetDoc.body) targetDoc.body.appendChild(container);
+    };
+    const unmountContainerIfIdle = () => {
+        if (!STATE.isExpanded && savedSettings.showBall === false && container.isConnected) container.remove();
+    };
 
     const shadow = container.attachShadow({ mode: 'open' });
 
@@ -1088,7 +1095,15 @@
         isolation: isolate;
         display: none;
     `;
-    targetDoc.body.appendChild(lyricHost);
+    // 懒挂载：暂停或关闭歌词时，歌词 fixed 宿主直接从 body 移除。
+    const ensureLyricHostMounted = () => {
+        if (!lyricHost.isConnected && targetDoc.body) targetDoc.body.appendChild(lyricHost);
+    };
+    const unmountLyricHost = () => {
+        if (lyricHost.isConnected) lyricHost.remove();
+    };
+    const shouldMountLyrics = () => STATE.isLyricsVisible && audio && !audio.paused;
+
     const lyricShadow = lyricHost.attachShadow({ mode: 'open' });
     const lyricStyle = targetDoc.createElement('style');
     lyricStyle.textContent = `
@@ -1437,6 +1452,7 @@
 
     // 拖拽与面板定位
     function initDraggable() {
+        if (savedSettings.showBall !== false || STATE.isExpanded) ensureContainerMounted();
         let isDragging = false;
         let startX, startY, initialLeft, initialTop;
         let currentX, currentY;
@@ -1539,6 +1555,7 @@
         const currentSize = parseInt(savedSettings.ballSize) || 50;
         
         if (STATE.isExpanded) {
+            ensureContainerMounted();
             container.style.display = 'block';
             UI.panel.style.display = 'flex';
             applySettings();
@@ -1605,7 +1622,12 @@
             UI.panel.classList.remove('open');
             UI.panel.style.display = 'none';
             // 关闭后如果悬浮球也隐藏，则整个播放器宿主退出渲染树。
-            container.style.display = savedSettings.showBall === false ? 'none' : 'block';
+            if (savedSettings.showBall === false) {
+                unmountContainerIfIdle();
+            } else {
+                ensureContainerMounted();
+                container.style.display = 'block';
+            }
             STATE.uiNeedsRender = false;
             UI.ball.innerHTML = '<i class="fas fa-music"></i>';
             if (STATE.isPlaying) UI.ball.classList.add('playing');
@@ -2560,9 +2582,15 @@
         const inactive = (active === UI.outLyrics) ? UI.outLyricsScroll : UI.outLyrics;
         inactive.classList.remove('show');
         active.classList.toggle('show', STATE.isLyricsVisible);
-        // 歌词关闭时，不只隐藏内容，也让 document.body 上的 fixed 宿主退出渲染树。
+        // 歌词关闭/暂停时，不只隐藏内容，直接把 fixed 宿主从 document.body 移除。
         if (lyricHost) {
-            lyricHost.style.display = STATE.isLyricsVisible ? 'block' : 'none';
+            if (shouldMountLyrics()) {
+                ensureLyricHostMounted();
+                lyricHost.style.display = 'block';
+            } else {
+                lyricHost.style.display = 'none';
+                unmountLyricHost();
+            }
         }
     }
 
@@ -2871,7 +2899,17 @@
         UI.ballVisibleToggle.checked = savedSettings.showBall !== false;
         UI.wrapper.classList.toggle('ball-hidden', savedSettings.showBall === false);
         // 隐藏悬浮球且播放器关闭时，连根宿主都从渲染树中拿掉。打开时再恢复。
-        if (!STATE.isExpanded) container.style.display = savedSettings.showBall === false ? 'none' : 'block';
+        if (!STATE.isExpanded) {
+            if (savedSettings.showBall === false) {
+                unmountContainerIfIdle();
+            } else {
+                ensureContainerMounted();
+                container.style.display = 'block';
+            }
+        } else {
+            ensureContainerMounted();
+            container.style.display = 'block';
+        }
         UI.wrapper.style.setProperty('--fm-custom-color', savedSettings.customColor);
         
         if (savedSettings.shapeStyle === 'square') {
@@ -2880,7 +2918,10 @@
             UI.wrapper.style.setProperty('--fm-radius-btn', '4px');
             UI.wrapper.style.setProperty('--fm-radius-input', '0px');
             UI.wrapper.style.setProperty('--fm-radius-thumb', '2px');
-            UI.shapeBtn.innerHTML = '<i class="fas fa-circle"></i>';
+            if (UI.shapeBtn.dataset.shapeState !== 'square') {
+                UI.shapeBtn.dataset.shapeState = 'square';
+                UI.shapeBtn.innerHTML = '<i class="fas fa-circle"></i>';
+            }
             UI.shapeBtn.title = "切换为圆润外观";
         } else {
             UI.wrapper.style.setProperty('--fm-radius-ball', '50%');
@@ -2888,7 +2929,10 @@
             UI.wrapper.style.setProperty('--fm-radius-btn', '50%');
             UI.wrapper.style.setProperty('--fm-radius-input', '8px');
             UI.wrapper.style.setProperty('--fm-radius-thumb', '50%');
-            UI.shapeBtn.innerHTML = '<i class="fas fa-square"></i>';
+            if (UI.shapeBtn.dataset.shapeState !== 'round') {
+                UI.shapeBtn.dataset.shapeState = 'round';
+                UI.shapeBtn.innerHTML = '<i class="fas fa-square"></i>';
+            }
             UI.shapeBtn.title = "切换为方正外观";
         }
         
@@ -2912,12 +2956,16 @@
         }
 
         // 修复：面板比例应用逻辑
-        if (savedSettings.panelRatio === '3:4') {
-            UI.ratioBtn.innerHTML = '<i class="fas fa-crop-alt"></i> 3:4';
-        } else if (savedSettings.panelRatio === '9:16') {
-            UI.ratioBtn.innerHTML = '<i class="fas fa-crop-alt"></i> 9:16';
-        } else {
-            UI.ratioBtn.innerHTML = '<i class="fas fa-crop-alt"></i> 自适应';
+        const ratioState = savedSettings.panelRatio || 'default';
+        if (UI.ratioBtn.dataset.ratioState !== ratioState) {
+            UI.ratioBtn.dataset.ratioState = ratioState;
+            if (ratioState === '3:4') {
+                UI.ratioBtn.innerHTML = '<i class="fas fa-crop-alt"></i> 3:4';
+            } else if (ratioState === '9:16') {
+                UI.ratioBtn.innerHTML = '<i class="fas fa-crop-alt"></i> 9:16';
+            } else {
+                UI.ratioBtn.innerHTML = '<i class="fas fa-crop-alt"></i> 自适应';
+            }
         }
 
         // 智能强调色应用逻辑：
@@ -3070,7 +3118,15 @@
         UI.ball.classList.add('playing');
         if (lrcRafId) cancelAnimationFrame(lrcRafId);
         stopLyricsTimer();
-        if (lyricHost) lyricHost.style.display = STATE.isLyricsVisible ? 'block' : 'none';
+        if (lyricHost) {
+            if (STATE.isLyricsVisible) {
+                ensureLyricHostMounted();
+                lyricHost.style.display = 'block';
+            } else {
+                lyricHost.style.display = 'none';
+                unmountLyricHost();
+            }
+        }
         updateLyrics();
         scheduleLyricsUpdate();
     };
@@ -3080,7 +3136,10 @@
         UI.ball.classList.remove('playing');
         if (lrcRafId) cancelAnimationFrame(lrcRafId);
         stopLyricsTimer();
-        if (lyricHost) lyricHost.style.display = 'none';
+        if (lyricHost) {
+            lyricHost.style.display = 'none';
+            unmountLyricHost();
+        }
     };
     audio.onended = () => {
         if (STATE.playMode === 'repeat_one') { audio.currentTime = 0; audio.play(); }
