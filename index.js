@@ -17,13 +17,6 @@
         console.warn("[АрⅤ] 跨域限制，降级至当前环境。");
     }
 
-    // 关键：脚本反复重装时，先清理上一实例，避免旧播放器/旧歌词层/旧事件继续留在页面。
-    try {
-        if (typeof targetWin.__apvPlayerCleanup === 'function') targetWin.__apvPlayerCleanup();
-    } catch (e) {
-        console.warn('[ArV] 清理上一播放器实例失败', e);
-    }
-
     // ================= 核心配置 =================
     const CONFIG = {
         ID: 'st-flow-music-player-pro',
@@ -118,7 +111,7 @@
     // 读取本地设置
     let savedSettings = { 
         ballSize: 50, customColor: '#4a90e2', bgImage: '', bgImageWidth: 0, bgImageHeight: 0, 
-        bgBlur: 10, bgBrightness: 70, lrcMode: 'popup', lrcFont: 16, lrcBottom: 80, lrcFontName: '默认字体', lrcFontFamily: '', lrcFontCss: '', lrcFontId: '', lrcFontUrl: '', 
+        bgBlur: 10, bgBrightness: 70, lrcMode: 'popup', lrcFont: 16, lrcBottom: 80, 
         panelRatio: 'default', shapeStyle: 'round', theme: 'adaptive',
         nowCoverImage: '', nowPlayingLabel: 'NOW PLAYING', showBall: true
     };
@@ -148,11 +141,8 @@
         lyricsData: [],
         isLyricsVisible: true,
         lastActiveLrcIndex: -1,
-        lastRenderedScrollIndex: -1,
         isSeekingProgress: false,
-        playRequestId: 0,
-        uiInitialized: false,
-        uiNeedsRender: true
+        playRequestId: 0
     };
 
     const getCurrentPlaylist = () => STATE.playlists.find(p => p.id === STATE.currentPlaylistId) || STATE.playlists[0];
@@ -160,7 +150,6 @@
 
     let audio = new targetWin.Audio();
     let lrcRafId = null;
-    let lrcTimerId = null;
 
     const DEFAULT_PLAYLIST_COLORS = ['#4a90e2', '#9b59b6', '#e67e22', '#2ecc71', '#e74c3c', '#1abc9c'];
     const getPlaylistColor = (playlist) => playlist?.color || savedSettings.customColor || '#4a90e2';
@@ -376,22 +365,13 @@
 
     const container = targetDoc.createElement('div');
     container.id = CONFIG.ID;
-    // 性能关键：宿主本身不再覆盖整个视口。播放器的 ball/panel 仍可通过 overflow:visible
-    // 定位到视口任意位置，但这个根节点自身只占 1×1px，避免给 SillyTavern 制造全屏固定层。
     container.style.cssText = `
         position: fixed; top: 0; left: 0;
-        width: 1px; height: 1px;
+        width: 100%; height: 100dvh;
+        min-width: 100%; min-height: 100dvh;
         overflow: visible; pointer-events: none; z-index: ${CONFIG.Z_INDEX};
     `;
-    // 主播放器宿主按需挂载：不打开播放器时，不让这个 Shadow DOM 参与 TT 页面渲染。
-    const ensureContainerMounted = () => {
-        if (!container.isConnected && targetDoc.body) targetDoc.body.appendChild(container);
-    };
-    const unmountContainerIfIdle = () => {
-        if (!STATE.isExpanded && savedSettings.showBall === false && container.isConnected) {
-            container.remove();
-        }
-    };
+    targetDoc.body.appendChild(container);
 
     const shadow = container.attachShadow({ mode: 'open' });
 
@@ -423,7 +403,7 @@
         .fm-ball {
             position: absolute; width: var(--fm-ball-size, 50px); height: var(--fm-ball-size, 50px); 
             border-radius: var(--fm-radius-ball);
-            background: var(--fm-bg);
+            background: var(--fm-bg); backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px);
             border: 1px solid var(--fm-border); box-shadow: 0 4px 12px var(--fm-shadow);
             display: flex; justify-content: center; align-items: center;
             color: var(--fm-text-main); font-size: 20px; cursor: grab; pointer-events: auto;
@@ -442,7 +422,7 @@
             max-width: calc(100vw - 40px);
             height: var(--fm-panel-height, 540px);
             max-height: calc(100dvh - 40px);
-            background: var(--fm-bg);
+            background: var(--fm-bg); backdrop-filter: blur(20px); -webkit-backdrop-filter: blur(20px);
             border: 1px solid var(--fm-border); 
             border-radius: var(--fm-radius-panel);
             box-shadow: 0 10px 30px var(--fm-shadow); display: flex; flex-direction: column;
@@ -450,16 +430,6 @@
             transition: var(--fm-transition); z-index: 5; overflow: hidden;
         }
         .fm-panel.open { opacity: 1; transform: scale(1) translateY(0); pointer-events: auto; }
-
-        /* 性能测试版：避免 backdrop-filter 在 Tauri/WebView 中持续触发大面积 GPU 合成。
-           保留半透明外观，但取消实时背景模糊。 */
-        .fm-ball, .fm-panel, .fm-popover, .dot-glass {
-            backdrop-filter: none !important;
-            -webkit-backdrop-filter: none !important;
-        }
-        .fm-panel:not(.open) {
-            display: none;
-        }
 
         .fm-header { display: flex; align-items: center; padding: 16px 20px; border-bottom: 1px solid var(--fm-border); cursor: move; }
         .fm-cover-mock { width: 44px; height: 44px; border-radius: var(--fm-radius-btn); background: var(--fm-border); display: flex; justify-content: center; align-items: center; color: var(--fm-text-sub); font-size: 18px; margin-right: 12px; flex-shrink: 0; transition: var(--fm-transition); }
@@ -565,7 +535,7 @@
         .dot-adaptive { background: linear-gradient(45deg, #4a90e2, #50e3c2); }
         .dot-light { background: #f0f0f0; border-color: #ccc; }
         .dot-dark { background: #222; }
-        .dot-glass { background: rgba(255,255,255,0.3); border-color: rgba(255,255,255,0.8); }
+        .dot-glass { background: rgba(255,255,255,0.3); border-color: rgba(255,255,255,0.8); backdrop-filter: blur(4px); }
 
         /* 优化歌词动画：延长持续时间，调整缓动函数，使其更柔和 */
         
@@ -592,42 +562,11 @@
             filter: blur(var(--fm-bg-blur, 0px)) brightness(var(--fm-bg-brightness, 100%));
         }
 
-        /* 桌面歌词字体下拉选择器：使用原生 select，避免 WebView 弹层透明/遮挡问题 */
-        .fm-lrc-font-row { display:flex; align-items:flex-start; gap:10px; }
-        .fm-lrc-font-picker { flex:1; min-width:0; display:flex; flex-direction:column; gap:7px; }
-        .fm-lrc-font-current { width:100%; min-width:0; height:32px; box-sizing:border-box; border:1px solid var(--fm-border); background:var(--fm-panel); color:var(--fm-text-main); border-radius:var(--fm-radius-input); padding:6px 10px; font-size:12px; outline:none; }
-        .fm-lrc-font-url-row { display:flex; gap:6px; width:100%; }
-        .fm-lrc-font-url { flex:1; min-width:0; height:32px; box-sizing:border-box; border:1px solid var(--fm-border); background:var(--fm-panel); color:var(--fm-text-main); border-radius:var(--fm-radius-input); padding:6px 10px; font-size:11px; outline:none; }
-        .fm-lrc-font-url::placeholder { color:var(--fm-text-sub); opacity:.8; }
-        .fm-lrc-font-url:focus { border-color:var(--fm-accent); }
-        .fm-lrc-font-import { flex:0 0 auto; height:32px; border:0; border-radius:var(--fm-radius-input); padding:0 11px; background:var(--fm-accent); color:#fff; font-size:11px; cursor:pointer; }
-        .fm-lrc-font-import:disabled { opacity:.55; cursor:wait; }
-        .fm-lrc-font-reset { width:100%; height:32px; margin-top:7px; border:0; border-radius:9px; background:rgba(0,0,0,.045); color:var(--fm-text-sub); cursor:pointer; font-size:10px; transition:background .18s ease,color .18s ease; }
-        .fm-lrc-font-reset:hover { background:rgba(0,0,0,.08); color:var(--fm-text-main); }
-        .fm-lrc-font-reset:disabled { opacity:.55; cursor:default; }
-        .fm-lrc-font-hint { font-size:9px; color:var(--fm-text-sub); line-height:1.45; }
-
-        /* 强制把自定义字体应用到桌面歌词本体。播放器其它文字完全不受影响。
-           注意：播放器基础样式对所有元素设置了默认字体，所以这里必须使用 !important。 */
-        .fm-out-lyrics, .fm-out-lyrics *,
-        .fm-out-lyrics-scroll, .fm-out-lyrics-scroll * {
-            font-family: var(--fm-lrc-family, var(--fm-font)) !important;
-        }
-
-        /* 性能修复：桌面歌词本体只创建“歌词实际占用的渲染区域”。
-           之前这里使用 absolute + 全屏播放器容器，歌词会跟着 100dvh 的父层参与大范围布局/绘制。
-           改为 fixed 后，歌词自身独立定位到视口，只对实际文字区域进行布局与绘制。 */
         .fm-out-lyrics {
-            position: fixed;
+            position: absolute;
             bottom: calc(var(--fm-lrc-bottom, 80px) + env(safe-area-inset-bottom, 0px));
-            left: 50%; transform: translateX(-50%);
+            max-height: 40dvh; overflow: hidden; left: 50%; transform: translateX(-50%);
             width: max-content; max-width: 80vw; min-width: 60px; min-height: 24px;
-            max-height: 40dvh;
-            height: auto;
-            overflow: hidden;
-            box-sizing: border-box;
-            contain: layout paint style;
-            isolation: isolate;
             text-align: center; pointer-events: none; z-index: 2147483647;
             display: flex; flex-direction: column; align-items: center; gap: 4px;
             opacity: 0; transition: opacity 0.5s, bottom 0.2s;
@@ -652,8 +591,8 @@
             animation: lrc-fall-in 0.8s cubic-bezier(0.22, 1, 0.36, 1) forwards;
         }
         @keyframes lrc-fall-in { 
-            0% { opacity: 0; transform: translateY(-40px); }
-            100% { opacity: 1; transform: translateY(0); } 
+            0% { opacity: 0; transform: translateY(-40px); filter: blur(4px); }
+            100% { opacity: 1; transform: translateY(0); filter: blur(0); } 
         }
         /* 翻译专用渐现动画：无位移，仅透明度和模糊变化 */
         .lrc-trans-fade {
@@ -661,32 +600,26 @@
             animation: lrc-trans-fade-in 0.8s cubic-bezier(0.22, 1, 0.36, 1) forwards;
         }
         @keyframes lrc-trans-fade-in {
-            0% { opacity: 0; }
-            100% { opacity: 1; }
+            0% { opacity: 0; filter: blur(4px); }
+            100% { opacity: 1; filter: blur(0); }
         }
         /* 优化退场动画：原地模糊消散，更自然柔和 */
         @keyframes lrc-fade-out {
-            0% { opacity: 1; transform: scale(1); }
-            100% { opacity: 0; transform: scale(0.95); }
+            0% { opacity: 1; transform: scale(1); filter: blur(0); }
+            100% { opacity: 0; transform: scale(0.95); filter: blur(8px); }
         }
         .lrc-highlight {
             color: #ff4d4f !important;
             text-shadow: 0 0 8px rgba(255, 77, 79, 0.6), 0 2px 4px rgba(0,0,0,0.5) !important;
         }
 
-        /* 三行滚动同样独立成一个小型 fixed 渲染区域，不再继承全屏 absolute 布局。 */
         .fm-out-lyrics-scroll {
-            position: fixed;
+            position: absolute;
             bottom: calc(var(--fm-lrc-bottom, 80px) + env(safe-area-inset-bottom, 0px));
-            left: 50%; transform: translateX(-50%);
+            max-height: 40dvh; overflow: hidden; left: 50%; transform: translateX(-50%);
             width: max-content; max-width: 80vw; min-width: 60px;
             height: calc(var(--fm-lrc-font, 16px) * 5.4);
-            max-height: 40dvh;
-            overflow: hidden;
-            box-sizing: border-box;
-            contain: layout paint style;
-            isolation: isolate;
-            pointer-events: none; z-index: 2147483647;
+            overflow: hidden; pointer-events: none; z-index: 2147483647;
             opacity: 0; transition: opacity 0.5s, bottom 0.2s;
             -webkit-mask-image: linear-gradient(to bottom, transparent 0%, black 30%, black 70%, transparent 100%);
             mask-image: linear-gradient(to bottom, transparent 0%, black 30%, black 70%, transparent 100%);
@@ -933,18 +866,6 @@
                                     <span class="fm-lrc-settings-label">位置</span>
                                     <input type="range" id="fm-lrc-bottom-slider" min="40" max="400" step="5">
                                 </div>
-                                <div class="fm-lrc-settings-row fm-lrc-font-row">
-                                    <span class="fm-lrc-settings-label">字体</span>
-                                    <div class="fm-lrc-font-picker">
-                                        <input class="fm-lrc-font-current" id="fm-lrc-font-current" type="text" value="默认字体" readonly aria-label="当前桌面歌词字体">
-                                        <div class="fm-lrc-font-url-row">
-                                            <input class="fm-lrc-font-url" id="fm-lrc-font-url" type="url" placeholder="粘贴 ZeoSeven 字体详情页 URL" autocomplete="off" aria-label="ZeoSeven 字体网址">
-                                            <button class="fm-lrc-font-import" id="fm-lrc-font-import" type="button">导入</button>
-                                        </div>
-                                        <button class="fm-lrc-font-reset" id="fm-lrc-font-reset" type="button">恢复默认字体</button>
-                                        <div class="fm-lrc-font-hint">例如：https://fonts.zeoseven.com/items/217/　只会应用到桌面歌词</div>
-                                    </div>
-                                </div>
                             </div>
                         </div>
                     </div>
@@ -986,6 +907,29 @@
                             <div class="fm-range-with-icon"><i class="fas fa-sun"></i><input type="range" class="fm-bg-slider" id="fm-bg-brightness" min="10" max="150" value="70"></div>
                         </div>
                     </div>
+
+                    <div class="fm-settings-section">
+                        <div class="fm-settings-section-title">缓存与维护</div>
+                        <div class="fm-more-row">
+                            <span>歌曲临时缓存</span>
+                            <button class="fm-bg-btn" id="fm-cache-clear-btn"><i class="fas fa-broom"></i> 清理</button>
+                        </div>
+                        <div class="fm-more-row">
+                            <span>歌词运行缓存</span>
+                            <button class="fm-bg-btn" id="fm-cache-lyrics-btn"><i class="fas fa-align-left"></i> 清理</button>
+                        </div>
+                        <div class="fm-more-row">
+                            <span>整理歌单数据</span>
+                            <button class="fm-bg-btn" id="fm-cache-repair-btn"><i class="fas fa-wrench"></i> 整理</button>
+                        </div>
+                        <div class="fm-more-row">
+                            <span>存储占用检查</span>
+                            <button class="fm-bg-btn" id="fm-cache-check-btn"><i class="fas fa-database"></i> 检查</button>
+                        </div>
+                        <div class="fm-more-row" style="font-size:0.78em; opacity:0.58; line-height:1.5;">
+                            <span style="width:100%;">以上操作只处理播放器自己的数据，不会清空 SillyTavern 的全局缓存；不会删除歌单、壁纸、小图或外观设置。</span>
+                        </div>
+                    </div>
                 </section>
             </main>
 
@@ -998,7 +942,6 @@
                 </button>
             </nav>
         </div>
-
 
         <div class="fm-pop-menu" id="fm-pop-menu"></div>
         <div class="fm-out-lyrics show" id="fm-out-lyrics"></div>
@@ -1033,10 +976,6 @@
         lrcModeFallBtn: wrapper.querySelector('#fm-lrc-mode-fall'),
         lrcFontSlider: wrapper.querySelector('#fm-lrc-font-slider'),
         lrcBottomSlider: wrapper.querySelector('#fm-lrc-bottom-slider'),
-        lrcFontCurrent: wrapper.querySelector('#fm-lrc-font-current'),
-        lrcFontUrl: wrapper.querySelector('#fm-lrc-font-url'),
-        lrcFontImport: wrapper.querySelector('#fm-lrc-font-import'),
-        lrcFontReset: wrapper.querySelector('#fm-lrc-font-reset'),
         outLyricsScroll: wrapper.querySelector('#fm-out-lyrics-scroll'),
         outLyricsScrollList: wrapper.querySelector('#fm-lrc-scroll-list'),
         sourceSelect: wrapper.querySelector('#fm-source-select'),
@@ -1056,6 +995,10 @@
         ratioBtn: wrapper.querySelector('#fm-bg-btn-ratio'),
         bgBlurSlider: wrapper.querySelector('#fm-bg-blur'),
         bgBrightnessSlider: wrapper.querySelector('#fm-bg-brightness'),
+        cacheClearBtn: wrapper.querySelector('#fm-cache-clear-btn'),
+        cacheLyricsBtn: wrapper.querySelector('#fm-cache-lyrics-btn'),
+        cacheRepairBtn: wrapper.querySelector('#fm-cache-repair-btn'),
+        cacheCheckBtn: wrapper.querySelector('#fm-cache-check-btn'),
         outLyrics: wrapper.querySelector('#fm-out-lyrics'),
         progressTrack: wrapper.querySelector('#fm-progress-track'),
         progressFill: wrapper.querySelector('#fm-progress-fill'),
@@ -1063,251 +1006,6 @@
         timeCurrent: wrapper.querySelector('#fm-time-current'),
         timeDuration: wrapper.querySelector('#fm-time-duration')
     };
-
-    // ================= 桌面歌词字体 =================
-    // 只接受用户主动提供的 ZeoSeven 字体详情页 / FontsAPI URL。
-    // 不抓取整个字体网站，也不维护庞大的在线字体目录，避免 WebView 卡顿。
-    const loadedFontCss = new Set();
-    const loadingFontCss = new Map();
-
-    // 只在用户点击“导入”后加载字体 CSS。不要 fetch ZeoSeven 页面：
-    // Tauri/WebView 对跨域 fetch 的限制可能导致明明字体 CSS 能加载，却拿不到文本。
-    const extractFontFamilyFromRules = (rules) => {
-        try {
-            for (const rule of Array.from(rules || [])) {
-                if (rule.type === targetWin.CSSRule.FONT_FACE_RULE || rule.cssText?.startsWith('@font-face')) {
-                    const family = rule.style?.getPropertyValue('font-family') || '';
-                    if (family.trim()) return family.trim().replace(/^['"]|['"]$/g, '');
-                }
-                if (rule.cssRules) {
-                    const nested = extractFontFamilyFromRules(rule.cssRules);
-                    if (nested) return nested;
-                }
-            }
-        } catch (_) {}
-        return '';
-    };
-
-    const loadZeoCssAndReadFamily = (cssUrl, timeout = 7000) => new Promise((resolve) => {
-        let settled = false;
-        const finish = (family) => {
-            if (settled) return;
-            settled = true;
-            if (timer) clearTimeout(timer);
-            resolve(family || '');
-        };
-        const id = 'fm-zeofont-inspect-' + btoa(unescape(encodeURIComponent(cssUrl))).replace(/[^a-zA-Z0-9]/g,'').slice(-28);
-        const old = targetDoc.getElementById(id);
-        // 每次导入都重新挂载 CSS link，避免旧 stylesheet 在 WebView 中处于
-        // 半加载/不可读状态时，把后续导入卡在“加载中”。
-        if (old) {
-            try { old.remove(); } catch (_) {}
-        }
-        const link = targetDoc.createElement('link');
-        link.id = id;
-        link.rel = 'stylesheet';
-        link.href = cssUrl;
-        link.crossOrigin = 'anonymous';
-        const timer = setTimeout(() => finish(''), timeout);
-        link.onload = () => {
-            let family = '';
-            try { family = extractFontFamilyFromRules(link.sheet?.cssRules); } catch (_) {}
-            finish(family);
-        };
-        link.onerror = () => finish('');
-        (targetDoc.head || targetDoc.documentElement).appendChild(link);
-    });
-
-    const parseZeoSevenUrl = (rawUrl) => {
-        let url;
-        try { url = new URL(String(rawUrl || '').trim()); } catch (_) { return null; }
-        const host = url.hostname.toLowerCase();
-        if (host !== 'fonts.zeoseven.com' && host !== 'www.fonts.zeoseven.com' && host !== 'fontsapi.zeoseven.com') return null;
-        if (host === 'fonts.zeoseven.com' || host === 'www.fonts.zeoseven.com') {
-            const m = url.pathname.match(/^\/items\/([^/]+)\/?$/i);
-            if (!m) return null;
-            const id = decodeURIComponent(m[1]);
-            return { id, css: `https://fontsapi.zeoseven.com/${encodeURIComponent(id)}/main/result.css`, pageUrl: `https://fonts.zeoseven.com/items/${encodeURIComponent(id)}/` };
-        }
-        const m = url.pathname.match(/^\/([^/]+)\/main\/result\.css$/i);
-        if (!m) return null;
-        const id = decodeURIComponent(m[1]);
-        return { id, css: url.href, pageUrl: `https://fonts.zeoseven.com/items/${encodeURIComponent(id)}/` };
-    };
-
-    const ensureZeoFontLoaded = (font) => {
-        if (!font?.css || !font?.family) return Promise.resolve(false);
-        if (loadedFontCss.has(font.css)) return Promise.resolve(true);
-        if (loadingFontCss.has(font.css)) return loadingFontCss.get(font.css);
-
-        const promise = new Promise((resolve) => {
-            let settled = false;
-            let timer = null;
-            const finish = (ok) => {
-                if (settled) return;
-                settled = true;
-                if (timer) clearTimeout(timer);
-                if (ok) loadedFontCss.add(font.css);
-                loadingFontCss.delete(font.css);
-                resolve(ok);
-            };
-
-            const id = 'fm-zeofont-' + btoa(unescape(encodeURIComponent(font.css))).replace(/[^a-zA-Z0-9]/g,'').slice(-28);
-            const old = targetDoc.getElementById(id);
-            if (old) { loadedFontCss.add(font.css); finish(true); return; }
-
-            const link = targetDoc.createElement('link');
-            link.id = id;
-            link.rel = 'stylesheet';
-            link.href = font.css;
-            link.crossOrigin = 'anonymous';
-            timer = setTimeout(() => finish(false), 7000);
-            link.onload = async () => {
-                try {
-                    if (targetDoc.fonts?.load) {
-                        await Promise.race([
-                            targetDoc.fonts.load(`16px "${font.family.replace(/"/g, '\\"')}"`),
-                            new Promise(r => setTimeout(r, 1800))
-                        ]);
-                    }
-                } catch (_) {}
-                finish(true);
-            };
-            link.onerror = () => finish(false);
-            (targetDoc.head || targetDoc.documentElement).appendChild(link);
-        });
-
-        loadingFontCss.set(font.css, promise);
-        return promise;
-    };
-
-    const setLrcFontVisual = (font) => {
-        const family = font?.family || '';
-        const safeFamily = family ? `"${family.replace(/"/g,'\\"')}"` : '';
-        UI.wrapper.style.setProperty('--fm-lrc-family', safeFamily || 'var(--fm-font)');
-        const lyricRoots = [UI.outLyrics, UI.outLyricsScroll, UI.outLyricsScrollList].filter(Boolean);
-        lyricRoots.forEach(root => {
-            root.style.setProperty('font-family', safeFamily || 'var(--fm-font)', 'important');
-            root.querySelectorAll('*').forEach(el => el.style.setProperty('font-family', safeFamily || 'var(--fm-font)', 'important'));
-        });
-        if (UI.lrcFontCurrent) {
-            UI.lrcFontCurrent.value = font?.name || '默认字体';
-            UI.lrcFontCurrent.style.fontFamily = safeFamily || '';
-        }
-    };
-
-    const applyLrcFont = (font, persist = true) => {
-        setLrcFontVisual(font);
-        if (persist) {
-            savedSettings.lrcFontName = font?.name || '默认字体';
-            savedSettings.lrcFontFamily = font?.family || '';
-            savedSettings.lrcFontCss = font?.css || '';
-            savedSettings.lrcFontId = font?.id || '';
-            savedSettings.lrcFontUrl = font?.pageUrl || '';
-            scheduleSettingsSave();
-        }
-    };
-
-    const getSavedLrcFont = () => {
-        if (savedSettings.lrcFontName === '默认字体' || !savedSettings.lrcFontFamily || !savedSettings.lrcFontCss) return null;
-        return {
-            id: savedSettings.lrcFontId || '',
-            name: savedSettings.lrcFontName,
-            family: savedSettings.lrcFontFamily,
-            css: savedSettings.lrcFontCss,
-            pageUrl: savedSettings.lrcFontUrl || ''
-        };
-    };
-
-    // 恢复播放器原本的桌面歌词字体：清除当前自定义字体样式与保存项，
-    // 但不影响其他外观、歌词字号/位置、歌单或播放器字体。
-    const resetLrcFontToDefault = () => {
-        try {
-            targetDoc.querySelectorAll('link[id^="fm-zeofont-"]').forEach(link => {
-                try { link.remove(); } catch (_) {}
-            });
-            targetDoc.querySelectorAll('link[id^="fm-zeofont-inspect-"]').forEach(link => {
-                try { link.remove(); } catch (_) {}
-            });
-        } catch (_) {}
-
-        loadedFontCss.clear();
-        loadingFontCss.clear();
-        savedSettings.lrcFontName = '默认字体';
-        savedSettings.lrcFontFamily = '';
-        savedSettings.lrcFontCss = '';
-        savedSettings.lrcFontId = '';
-        savedSettings.lrcFontUrl = '';
-        if (UI.lrcFontUrl) UI.lrcFontUrl.value = '';
-        applyLrcFont(null, true);
-        API.toast('已恢复默认字体');
-    };
-
-    const importZeoSevenFont = async () => {
-        const raw = UI.lrcFontUrl?.value.trim();
-        if (!raw) { API.toast('请先粘贴 ZeoSeven 字体网址'); return; }
-        const parsed = parseZeoSevenUrl(raw);
-        if (!parsed) {
-            API.toast('请输入 ZeoSeven 字体详情页网址，例如 https://fonts.zeoseven.com/items/217/');
-            return;
-        }
-
-        const btn = UI.lrcFontImport;
-        if (btn) { btn.disabled = true; btn.textContent = '加载中'; }
-        try {
-            // 关键：直接加载 FontsAPI CSS，再从已经加载的 stylesheet 读取 @font-face。
-            // 不再 fetch ZeoSeven 页面，避免 Tauri/WebView 的跨域 fetch 导致导入失败。
-            const family = await loadZeoCssAndReadFamily(parsed.css, 7000);
-            if (!family) {
-                API.toast('字体 CSS 已请求，但没有读取到 font-family；请检查该字体的 FontsAPI 是否可用');
-                return;
-            }
-
-            const name = family;
-            const font = { id: parsed.id, name, family, css: parsed.css, pageUrl: parsed.pageUrl };
-            const ok = await ensureZeoFontLoaded(font);
-            if (!ok) { API.toast('字体加载失败，请检查网络后重试'); return; }
-
-            applyLrcFont(font, true);
-            if (UI.lrcFontUrl) UI.lrcFontUrl.value = parsed.pageUrl;
-            API.toast(`已导入并应用：${name}`);
-        } catch (err) {
-            console.warn('[ArV] ZeoSeven font import failed:', err);
-            API.toast('字体导入失败，请检查网址和网络连接');
-        } finally {
-            if (btn) { btn.disabled = false; btn.textContent = '导入'; }
-        }
-    };
-
-    // 防止误点/连点导致字体导入流程重复启动；不会触碰歌单导入按钮。
-    let isImportingZeoFont = false;
-    const originalImportZeoSevenFont = importZeoSevenFont;
-    const guardedImportZeoSevenFont = async () => {
-        if (isImportingZeoFont) return;
-        isImportingZeoFont = true;
-        try {
-            await originalImportZeoSevenFont();
-        } finally {
-            isImportingZeoFont = false;
-            if (UI.lrcFontImport) {
-                UI.lrcFontImport.disabled = false;
-                UI.lrcFontImport.textContent = '导入';
-            }
-        }
-    };
-    UI.lrcFontImport?.addEventListener('click', guardedImportZeoSevenFont);
-    UI.lrcFontUrl?.addEventListener('keydown', (e) => {
-        if (e.key === 'Enter') guardedImportZeoSevenFont();
-    });
-
-    UI.lrcFontReset?.addEventListener('click', resetLrcFontToDefault);
-
-    // 启动时只恢复视觉设置；真正的远程字体加载延迟到播放器打开后。
-    const savedLrcFont = getSavedLrcFont();
-    setLrcFontVisual(savedLrcFont || null);
-
-    // 性能优化：不再持续监听歌词 DOM。歌词更新时由现有渲染逻辑主动应用字体，
-    // 避免每次歌词节点变化都触发一次额外的 MutationObserver 回调。
 
     // ================= 页面导航 =================
     UI.themeDots.forEach(dot => dot.classList.toggle('active', dot.dataset.theme === STATE.currentTheme));
@@ -1434,21 +1132,7 @@
         const currentSize = parseInt(savedSettings.ballSize) || 50;
         
         if (STATE.isExpanded) {
-            ensureContainerMounted();
-            container.style.display = 'block';
-            UI.panel.style.display = 'flex';
-            applySettings();
-            const activeLrcFont = getSavedLrcFont();
-            if (activeLrcFont) {
-                ensureZeoFontLoaded(activeLrcFont).then(ok => {
-                    if (ok && STATE.isExpanded) setLrcFontVisual(activeLrcFont);
-                });
-            }
-
-            if (!STATE.uiInitialized || STATE.uiNeedsRender) {
-                renderListUI();
-                STATE.uiInitialized = true;
-            }
+            applySettings(); 
             
             // 使用实际 CSS 宽度，避免小屏 max-width 与 JS 估算不一致。
             const panelWidth = Math.min(UI.panel.offsetWidth || 400, targetWin.innerWidth - CONFIG.SAFE_MARGIN * 2);
@@ -1499,11 +1183,6 @@
             UI.panel.classList.add('open');
         } else {
             UI.panel.classList.remove('open');
-            UI.panel.style.display = 'none';
-            // 关闭后如果悬浮球也隐藏，则整个播放器宿主退出渲染树。
-            container.style.display = savedSettings.showBall === false ? 'none' : 'block';
-            STATE.uiNeedsRender = false;
-            unmountContainerIfIdle();
             UI.ball.innerHTML = '<i class="fas fa-music"></i>';
             if (STATE.isPlaying) UI.ball.classList.add('playing');
         }
@@ -1883,11 +1562,6 @@
     }
 
     function renderListUI() {
-        if (!STATE.isExpanded) {
-            STATE.uiNeedsRender = true;
-            return;
-        }
-        STATE.uiNeedsRender = false;
         renderTabs();
         UI.playlistEl.innerHTML = '';
 
@@ -2067,10 +1741,8 @@
         renderListUI();
 
         audio.pause(); audio.src = '';
-        STATE.lyricsData = []; UI.outLyrics.innerHTML = ''; UI.outLyricsScrollList.innerHTML = ''; STATE.lastActiveLrcIndex = -1; STATE.lastRenderedScrollIndex = -1;
-        STATE.lastRenderedScrollIndex = -1;
+        STATE.lyricsData = []; UI.outLyrics.innerHTML = ''; UI.outLyricsScrollList.innerHTML = ''; STATE.lastActiveLrcIndex = -1;
         if (lrcRafId) cancelAnimationFrame(lrcRafId);
-        stopLyricsTimer();
         updateProgressUI(0, 0);
 
         if (!track.url) {
@@ -2127,8 +1799,7 @@
                     parseLyric(lrcData.lyric, lrcData.tlyric);
                     buildScrollLyricsDom(); 
                     if (lrcRafId) cancelAnimationFrame(lrcRafId);
-                    stopLyricsTimer();
-                    if (STATE.isLyricsVisible && !audio.paused) { updateLyrics(); scheduleLyricsUpdate(); }
+                    if (STATE.isLyricsVisible && !audio.paused) updateLyrics();
                 }
             }
         } else {
@@ -2205,18 +1876,11 @@
     function renderScrollActiveLine(activeIdx) {
         const lineEls = UI.outLyricsScrollList.children;
         if (lineEls.length === 0) return;
-        const prev = STATE.lastRenderedScrollIndex;
-        // 只清理上一行附近的状态，再设置当前行附近状态。
-        // 原版每换一句都会遍历整首歌词的所有 DOM 节点；长歌单/长歌词时没有必要。
-        [prev - 1, prev, prev + 1, activeIdx - 1, activeIdx, activeIdx + 1].forEach(i => {
-            if (i >= 0 && i < lineEls.length) lineEls[i].classList.remove('current', 'near');
-        });
-        [-1, 0, 1].forEach(delta => {
-            const i = activeIdx + delta;
-            if (i < 0 || i >= lineEls.length) return;
-            lineEls[i].classList.add(delta === 0 ? 'current' : 'near');
-        });
-        STATE.lastRenderedScrollIndex = activeIdx;
+        for (let i = 0; i < lineEls.length; i++) {
+            lineEls[i].classList.remove('current', 'near');
+            if (i === activeIdx) lineEls[i].classList.add('current');
+            else if (Math.abs(i - activeIdx) === 1) lineEls[i].classList.add('near');
+        }
         const activeLine = lineEls[activeIdx];
         if (!activeLine) return;
         const containerHeight = UI.outLyricsScroll.clientHeight;
@@ -2234,11 +1898,9 @@
         // 随机掉落模式下，提前 0.8 秒触发下一句，实现交叠效果
         const effectiveTime = ct + (isFallMode ? 0.8 : 0);
         
-        let lo = 0, hi = STATE.lyricsData.length - 1, activeIdx = -1;
-        while (lo <= hi) {
-            const mid = (lo + hi) >> 1;
-            if (effectiveTime >= STATE.lyricsData[mid].time) { activeIdx = mid; lo = mid + 1; }
-            else hi = mid - 1;
+        let activeIdx = -1;
+        for (let i = STATE.lyricsData.length - 1; i >= 0; i--) {
+            if (effectiveTime >= STATE.lyricsData[i].time) { activeIdx = i; break; }
         }
 
         if (activeIdx !== -1 && activeIdx !== STATE.lastActiveLrcIndex) {
@@ -2397,34 +2059,6 @@
         lrcRafId = null;
     }
 
-    function stopLyricsTimer() {
-        if (lrcTimerId) { clearTimeout(lrcTimerId); lrcTimerId = null; }
-    }
-
-    function scheduleLyricsUpdate() {
-        stopLyricsTimer();
-        if (!STATE.isLyricsVisible || audio.paused || STATE.lyricsData.length === 0) return;
-        const ct = audio.currentTime;
-        const offset = savedSettings.lrcMode === 'fall' ? 0.8 : 0;
-        const effectiveTime = ct + offset;
-        let lo = 0, hi = STATE.lyricsData.length - 1, activeIdx = -1;
-        while (lo <= hi) {
-            const mid = (lo + hi) >> 1;
-            if (effectiveTime >= STATE.lyricsData[mid].time) { activeIdx = mid; lo = mid + 1; }
-            else hi = mid - 1;
-        }
-        const nextIdx = activeIdx + 1;
-        if (nextIdx >= STATE.lyricsData.length) return;
-        const nextAt = STATE.lyricsData[nextIdx].time - offset;
-        const delay = Math.max(20, (nextAt - ct) * 1000);
-        lrcTimerId = setTimeout(() => {
-            lrcTimerId = null;
-            if (!STATE.isLyricsVisible || audio.paused) return;
-            updateLyrics();
-            scheduleLyricsUpdate();
-        }, delay);
-    }
-
     // ================= 事件绑定 =================
     
     UI.closeBtn.onclick = togglePanel;
@@ -2469,7 +2103,6 @@
         } else if (!audio.paused) {
             STATE.lastActiveLrcIndex = -1;
             updateLyrics();
-            scheduleLyricsUpdate();
         }
     };
 
@@ -2482,10 +2115,9 @@
         savedSettings.lrcMode = 'plain';
         updateLrcModeBtns();
         STATE.lastActiveLrcIndex = -1;
-        STATE.lastRenderedScrollIndex = -1;
         if (lrcRafId) { cancelAnimationFrame(lrcRafId); lrcRafId = null; }
         syncLyricsVisibility();
-        if (STATE.isLyricsVisible && !audio.paused) { updateLyrics(); scheduleLyricsUpdate(); }
+        if (STATE.isLyricsVisible && !audio.paused) updateLyrics();
         applySettings();
     };
 
@@ -2494,9 +2126,8 @@
         savedSettings.lrcMode = 'popup';
         updateLrcModeBtns();
         STATE.lastActiveLrcIndex = -1;
-        STATE.lastRenderedScrollIndex = -1;
         syncLyricsVisibility();
-        if (STATE.isLyricsVisible && !audio.paused) { updateLyrics(); scheduleLyricsUpdate(); }
+        if (STATE.isLyricsVisible && !audio.paused) updateLyrics();
         applySettings();
     };
     UI.lrcModeScrollBtn.onclick = () => {
@@ -2504,10 +2135,9 @@
         savedSettings.lrcMode = 'scroll';
         updateLrcModeBtns();
         STATE.lastActiveLrcIndex = -1;
-        STATE.lastRenderedScrollIndex = -1;
         syncLyricsVisibility();
         if (STATE.lyricsData.length > 0) buildScrollLyricsDom();
-        if (STATE.isLyricsVisible && !audio.paused) { updateLyrics(); scheduleLyricsUpdate(); }
+        if (STATE.isLyricsVisible && !audio.paused) updateLyrics();
         applySettings();
     };
     UI.lrcModeFallBtn.onclick = () => {
@@ -2515,9 +2145,8 @@
         savedSettings.lrcMode = 'fall';
         updateLrcModeBtns();
         STATE.lastActiveLrcIndex = -1;
-        STATE.lastRenderedScrollIndex = -1;
         syncLyricsVisibility();
-        if (STATE.isLyricsVisible && !audio.paused) { updateLyrics(); scheduleLyricsUpdate(); }
+        if (STATE.isLyricsVisible && !audio.paused) updateLyrics();
         applySettings();
     };
 
@@ -2763,8 +2392,6 @@
         UI.wrapper.style.setProperty('--fm-ball-size', `${savedSettings.ballSize}px`);
         UI.ballVisibleToggle.checked = savedSettings.showBall !== false;
         UI.wrapper.classList.toggle('ball-hidden', savedSettings.showBall === false);
-        // 隐藏悬浮球且播放器关闭时，连根宿主都从渲染树中拿掉。打开时再恢复。
-        if (!STATE.isExpanded) container.style.display = savedSettings.showBall === false ? 'none' : 'block';
         UI.wrapper.style.setProperty('--fm-custom-color', savedSettings.customColor);
         
         if (savedSettings.shapeStyle === 'square') {
@@ -2794,14 +2421,6 @@
         UI.wrapper.style.setProperty('--fm-bg-brightness', `${savedSettings.bgBrightness}%`);
         UI.wrapper.style.setProperty('--fm-lrc-font', `${savedSettings.lrcFont}px`);
         UI.wrapper.style.setProperty('--fm-lrc-bottom', `${savedSettings.lrcBottom}px`);
-        const savedLrcFont = getSavedLrcFont();
-        if (savedLrcFont) {
-            ensureZeoFontLoaded(savedLrcFont).then((ok) => {
-                if (ok) applyLrcFont(savedLrcFont, false);
-            });
-        } else {
-            applyLrcFont(null, false);
-        }
 
         // 修复：面板比例应用逻辑
         if (savedSettings.panelRatio === '3:4') {
@@ -2932,6 +2551,76 @@
         }
     };
 
+    // ================= 缓存与数据维护 =================
+    // 这里刻意只操作播放器自己的 localStorage 数据和内存状态，绝不碰 SillyTavern 全局缓存。
+    UI.cacheClearBtn.onclick = () => {
+        const confirmed = targetWin.confirm('清理歌曲临时缓存？\n\n将清除歌曲已保存的播放地址、歌词地址和失败重试标记。\n不会删除歌单、歌曲信息、壁纸、小图或外观设置。');
+        if (!confirmed) return;
+
+        let cleared = 0;
+        STATE.playlists.forEach(list => {
+            list.tracks.forEach(track => {
+                let changed = false;
+                if (track.url) { track.url = null; changed = true; }
+                if (track.lrcUrl) { track.lrcUrl = null; changed = true; }
+                if (track.__retriedOnError) { delete track.__retriedOnError; changed = true; }
+                if (changed) cleared++;
+            });
+        });
+        savePlaylist();
+        API.toast(cleared > 0 ? `已清理 ${cleared} 首歌曲的临时缓存，下次播放时重新解析。` : '当前没有需要清理的歌曲缓存。');
+    };
+
+    UI.cacheLyricsBtn.onclick = () => {
+        if (audio && !audio.paused) audio.pause();
+        STATE.lyricsData = [];
+        STATE.lastActiveLrcIndex = -1;
+        if (UI.outLyrics) UI.outLyrics.replaceChildren();
+        if (UI.outLyricsScrollList) UI.outLyricsScrollList.replaceChildren();
+        API.toast('歌词运行缓存已清理；已保存的歌曲歌词地址不会被删除。');
+    };
+
+    UI.cacheRepairBtn.onclick = () => {
+        const confirmed = targetWin.confirm('整理播放器歌单数据？\n\n会去除重复歌曲、修复异常歌单项，并限制单个歌单最多 1000 首歌曲。\n不会删除壁纸、小图或外观设置。');
+        if (!confirmed) return;
+
+        let removed = 0;
+        STATE.playlists = STATE.playlists.filter(Boolean).map((list, i) => {
+            list.id = String(list.id || (i === 0 ? 'default' : `pl_${Date.now()}_${i}`));
+            list.name = String(list.name || (i === 0 ? '默认列表' : `歌单 ${i + 1}`));
+            list.description = String(list.description || '');
+            list.cover = typeof list.cover === 'string' ? list.cover : '';
+            list.color = /^#[0-9a-fA-F]{6}$/.test(String(list.color || '')) ? String(list.color) : '';
+            const before = Array.isArray(list.tracks) ? list.tracks.length : 0;
+            list.tracks = dedupeAndLimitTracks(Array.isArray(list.tracks) ? list.tracks.filter(Boolean) : []);
+            removed += before - list.tracks.length;
+            return list;
+        });
+        if (!STATE.playlists.length || STATE.playlists[0].id !== 'default') {
+            STATE.playlists.unshift({ id: 'default', name: '默认列表', description: '', cover: '', color: '', tracks: [] });
+        }
+        STATE.currentPlaylistId = STATE.playlists.some(p => p.id === STATE.currentPlaylistId) ? STATE.currentPlaylistId : STATE.playlists[0].id;
+        STATE.playingPlaylistId = STATE.playlists.some(p => p.id === STATE.playingPlaylistId) ? STATE.playingPlaylistId : STATE.playlists[0].id;
+        savePlaylist();
+        renderListUI();
+        API.toast(removed > 0 ? `整理完成：清理了 ${removed} 条重复/超限数据。` : '整理完成：没有发现需要清理的重复或超限数据。');
+    };
+
+    UI.cacheCheckBtn.onclick = () => {
+        try {
+            const playlistRaw = localStorage.getItem(CONFIG.STORAGE_KEY) || '';
+            const settingsRaw = localStorage.getItem(CONFIG.SETTINGS_KEY) || '';
+            const playlistKB = (new Blob([playlistRaw]).size / 1024).toFixed(1);
+            const settingsKB = (new Blob([settingsRaw]).size / 1024).toFixed(1);
+            const trackCount = STATE.playlists.reduce((sum, list) => sum + (Array.isArray(list.tracks) ? list.tracks.length : 0), 0);
+            const cachedCount = STATE.playlists.reduce((sum, list) => sum + (list.tracks || []).filter(t => t.url || t.lrcUrl).length, 0);
+            targetWin.alert(`播放器存储检查\n\n歌单数据：${playlistKB} KB\n外观/图片设置：${settingsKB} KB\n歌单数量：${STATE.playlists.length}\n歌曲数量：${trackCount}\n已保存音源/歌词地址：${cachedCount} 首\n\n如遇卡顿，可先使用“歌曲临时缓存”和“歌词运行缓存”；不要清空 SillyTavern 全局缓存。`);
+        } catch (e) {
+            API.toast('存储检查失败，但没有修改任何数据。');
+            console.warn('[АрⅤ] 存储检查失败', e);
+        }
+    };
+
     UI.ratioBtn.onclick = () => {
         const ratios = ['default', '3:4', '9:16'];
         let idx = ratios.indexOf(savedSettings.panelRatio);
@@ -2961,27 +2650,21 @@
         UI.playBtn.innerHTML = '<i class="fas fa-pause"></i>';
         UI.ball.classList.add('playing');
         if (lrcRafId) cancelAnimationFrame(lrcRafId);
-        stopLyricsTimer();
         updateLyrics();
-        scheduleLyricsUpdate();
     };
     audio.onpause = () => {
         STATE.isPlaying = false;
         UI.playBtn.innerHTML = '<i class="fas fa-play"></i>';
         UI.ball.classList.remove('playing');
         if (lrcRafId) cancelAnimationFrame(lrcRafId);
-        stopLyricsTimer();
     };
     audio.onended = () => {
         if (STATE.playMode === 'repeat_one') { audio.currentTime = 0; audio.play(); }
         else playNext();
     };
     audio.ontimeupdate = () => {
-        // 播放器关闭时，停止播放器面板的高频 DOM 更新，但歌词必须继续跟随音乐推进。
-        // 歌词现在是独立的小型渲染层，因此不会再因为这里继续更新而把整个播放器页面带入高频重排。
-        if (STATE.isExpanded && !STATE.isSeekingProgress) {
-            updateProgressUI(audio.currentTime, audio.duration);
-        }
+        if (!STATE.isSeekingProgress) updateProgressUI(audio.currentTime, audio.duration);
+        if (STATE.isLyricsVisible) updateLyrics();
     };
     audio.onloadedmetadata = () => { if (!STATE.isSeekingProgress) updateProgressUI(audio.currentTime, audio.duration); };
     audio.onerror = () => {
@@ -3041,7 +2724,7 @@
     // ================= 初始化 =================
     initDraggable();
     initProgressBar();
-    // 不在脚本加载阶段构建歌单 DOM；第一次打开播放器时再渲染。
+    renderListUI(); 
     
     if (startupDedupeCount > 0 || startupLimitCount > 0) {
         let msg = `[优化] 启动清理完成：`;
@@ -3052,9 +2735,7 @@
     
     targetWin._flowMusicToggle = () => {
         savedSettings.showBall = savedSettings.showBall === false;
-        if (savedSettings.showBall) ensureContainerMounted();
         applySettings();
-        if (!savedSettings.showBall) unmountContainerIfIdle();
     };
 
     if (typeof eventOn === 'function' && typeof getButtonEvent === 'function') {
@@ -3063,45 +2744,21 @@
 
     // SillyTavern 的输入框扩展菜单（扳手/魔法棒菜单）只需要放一个入口，
     // 点击入口后打开播放器自己的完整面板，不把播放器 UI 塞进菜单。
-    let menuRetryTimer = null;
-    let menuRetryStopTimer = null;
     if (!installSillyTavernWandButton()) {
-        menuRetryTimer = setInterval(() => {
-            if (installSillyTavernWandButton()) {
-                clearInterval(menuRetryTimer);
-                menuRetryTimer = null;
-            }
+        const retry = setInterval(() => {
+            if (installSillyTavernWandButton()) clearInterval(retry);
         }, 500);
-        menuRetryStopTimer = setTimeout(() => {
-            if (menuRetryTimer) clearInterval(menuRetryTimer);
-            menuRetryTimer = null;
-            menuRetryStopTimer = null;
-        }, 15000);
+        setTimeout(() => clearInterval(retry), 15000);
     }
 
-    // 实例级清理：更新/重装脚本时先清理上一实例，防止 audio、pagehide、计时器和独立歌词层累积。
-    const cleanupPlayerInstance = () => {
-        try { if (audio) { audio.pause(); audio.src = ''; audio = null; } } catch (_) {}
-        try { if (lrcRafId) cancelAnimationFrame(lrcRafId); } catch (_) {}
-        try { stopLyricsTimer(); } catch (_) {}
-        try { clearTimeout(settingsSaveTimer); } catch (_) {}
-        try { if (menuRetryTimer) clearInterval(menuRetryTimer); } catch (_) {}
-        try { if (menuRetryStopTimer) clearTimeout(menuRetryStopTimer); } catch (_) {}
-        try { saveSettings(); } catch (_) {}
-        try { targetDoc.querySelectorAll('link[id^="fm-zeofont-"]').forEach(link => link.remove()); } catch (_) {}
-        try { targetDoc.querySelectorAll('link[id^="fm-zeofont-inspect-"]').forEach(link => link.remove()); } catch (_) {}
-        try {
-            const c = targetDoc.getElementById(CONFIG.ID);
-            if (c) c.remove();
-            const menuItem = targetDoc.getElementById('arv_terminal_wand_container');
-            if (menuItem) menuItem.remove();
-        } catch (_) {}
-        try { delete targetWin._flowMusicToggle; } catch (_) {}
-        if (targetWin.__apvPlayerCleanup === cleanupPlayerInstance) {
-            try { delete targetWin.__apvPlayerCleanup; } catch (_) {}
-        }
-    };
-    targetWin.__apvPlayerCleanup = cleanupPlayerInstance;
-    targetWin.addEventListener('pagehide', cleanupPlayerInstance, { once: true });
+    targetWin.addEventListener('pagehide', () => {
+        if (audio) { audio.pause(); audio.src = ''; audio = null; }
+        if (lrcRafId) cancelAnimationFrame(lrcRafId);
+        saveSettings();
+        clearTimeout(settingsSaveTimer);
+        const c = targetDoc.getElementById(CONFIG.ID);
+        if (c) c.remove();
+        delete targetWin._flowMusicToggle;
+    });
 
 })();
