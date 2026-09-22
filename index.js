@@ -978,6 +978,15 @@
                             <div class="fm-range-with-icon"><i class="fas fa-sun"></i><input type="range" class="fm-bg-slider" id="fm-bg-brightness" min="10" max="150" value="70"></div>
                         </div>
                     </div>
+
+                    <div class="fm-settings-section">
+                        <div class="fm-settings-section-title">清理播放器缓存</div>
+                        <div class="fm-more-row">
+                            <span>清除旧版本沉积数据</span>
+                            <button class="fm-bg-btn" id="fm-cache-clean-btn"><i class="fas fa-broom"></i> 清理</button>
+                        </div>
+                        <div class="fm-card-sub">只清理播放器旧缓存/Cache Storage，不会删除当前歌单、壁纸、装修小图或当前设置。</div>
+                    </div>
                 </section>
             </main>
 
@@ -1048,6 +1057,7 @@
         ratioBtn: wrapper.querySelector('#fm-bg-btn-ratio'),
         bgBlurSlider: wrapper.querySelector('#fm-bg-blur'),
         bgBrightnessSlider: wrapper.querySelector('#fm-bg-brightness'),
+        cacheCleanBtn: wrapper.querySelector('#fm-cache-clean-btn'),
         outLyrics: wrapper.querySelector('#fm-out-lyrics'),
         progressTrack: wrapper.querySelector('#fm-progress-track'),
         progressFill: wrapper.querySelector('#fm-progress-fill'),
@@ -1149,12 +1159,23 @@
     UI.lyricHost = lyricHost;
     UI.lyricShadow = lyricShadow;
 
+    // 性能：不要在每次滑块 input 时同步读取 computedStyle。
+    // getComputedStyle 可能触发样式计算/布局，歌词层又是独立 DOM，因此改成
+    // 首次同步 + rAF 合并同步，并且只写入真正变化的变量。
+    const lyricHostVarNames = ['--fm-font','--fm-lrc-font','--fm-lrc-bottom','--fm-lrc-family','--fm-bg','--fm-text-main','--fm-text-sub','--fm-accent','--fm-border','--fm-shadow'];
+    let lyricHostSyncRaf = null;
     const syncLyricHostVars = () => {
-        const names = ['--fm-font','--fm-lrc-font','--fm-lrc-bottom','--fm-lrc-family','--fm-bg','--fm-text-main','--fm-text-sub','--fm-accent','--fm-border','--fm-shadow'];
-        const cs = targetWin.getComputedStyle(UI.wrapper);
-        names.forEach((name) => {
-            const value = cs.getPropertyValue(name).trim();
-            if (value) lyricHost.style.setProperty(name, value);
+        if (lyricHostSyncRaf) return;
+        lyricHostSyncRaf = targetWin.requestAnimationFrame(() => {
+            lyricHostSyncRaf = null;
+            const cs = targetWin.getComputedStyle(UI.wrapper);
+            lyricHostVarNames.forEach((name) => {
+                const value = cs.getPropertyValue(name).trim();
+                if (!value) return;
+                if (lyricHost.style.getPropertyValue(name) !== value) {
+                    lyricHost.style.setProperty(name, value);
+                }
+            });
         });
     };
     syncLyricHostVars();
@@ -1532,7 +1553,7 @@
         if (STATE.isExpanded) {
             container.style.display = 'block';
             UI.panel.style.display = 'flex';
-            applySettings();
+            applySettings(false);
             const activeLrcFont = getSavedLrcFont();
             if (activeLrcFont) {
                 ensureZeoFontLoaded(activeLrcFont).then(ok => {
@@ -1621,12 +1642,22 @@
         return `${m}:${s < 10 ? '0' : ''}${s}`;
     }
 
+    let progressRafId = null;
+    let pendingProgress = null;
     function updateProgressUI(current, duration) {
-        const pct = (duration && isFinite(duration) && duration > 0) ? Math.min(100, Math.max(0, (current / duration) * 100)) : 0;
-        UI.progressFill.style.width = `${pct}%`;
-        UI.progressThumb.style.left = `${pct}%`;
-        UI.timeCurrent.textContent = formatTime(current);
-        UI.timeDuration.textContent = formatTime(duration);
+        pendingProgress = { current, duration };
+        if (progressRafId) return;
+        progressRafId = targetWin.requestAnimationFrame(() => {
+            progressRafId = null;
+            const p = pendingProgress;
+            pendingProgress = null;
+            if (!p) return;
+            const pct = (p.duration && isFinite(p.duration) && p.duration > 0) ? Math.min(100, Math.max(0, (p.current / p.duration) * 100)) : 0;
+            UI.progressFill.style.width = `${pct}%`;
+            UI.progressThumb.style.left = `${pct}%`;
+            UI.timeCurrent.textContent = formatTime(p.current);
+            UI.timeDuration.textContent = formatTime(p.duration);
+        });
     }
 
     function initProgressBar() {
@@ -2720,11 +2751,15 @@
     UI.input.onkeypress = (e) => {
         if (e.key === 'Enter') UI.addBtn.click();
     };
+    let localSearchTimer = null;
     UI.input.oninput = () => {
-        if (STATE.currentInputMode === 'search_local') {
-            STATE.localSearchKeyword = UI.input.value.trim().toLowerCase();
+        if (STATE.currentInputMode !== 'search_local') return;
+        clearTimeout(localSearchTimer);
+        const keyword = UI.input.value.trim().toLowerCase();
+        localSearchTimer = setTimeout(() => {
+            STATE.localSearchKeyword = keyword;
             renderListUI();
-        }
+        }, 120);
     };
 
     const THEME_DEFAULT_COLORS = {
@@ -2787,8 +2822,12 @@
         settingsSaveTimer = setTimeout(saveSettings, 250);
     };
 
-    const applyDecoration = () => {
+    let lastDecorationKey = null;
+    const applyDecoration = (force = false) => {
         const label = String(savedSettings.nowPlayingLabel || '').trim() || 'NOW PLAYING';
+        const key = `${label}\n${savedSettings.nowCoverImage || ''}`;
+        if (!force && key === lastDecorationKey) return;
+        lastDecorationKey = key;
         if (UI.nowPlayingLabel) UI.nowPlayingLabel.textContent = label;
 
         const renderCover = (container) => {
@@ -3015,6 +3054,44 @@
         reader.readAsDataURL(file);
     };
 
+    const cleanAccumulatedPlayerCache = async () => {
+        const removablePrefixes = ['apv_', 'apv-terminal-', 'arv_', 'flowmusic_', 'flow_music_'];
+        let removedLocal = 0;
+        try {
+            const keys = [];
+            for (let i = 0; i < localStorage.length; i++) {
+                const key = localStorage.key(i);
+                if (!key) continue;
+                const lower = key.toLowerCase();
+                // 当前正在使用的两个存储项必须保留。
+                if (key === CONFIG.STORAGE_KEY || key === CONFIG.SETTINGS_KEY) continue;
+                if (removablePrefixes.some(prefix => lower.startsWith(prefix))) keys.push(key);
+            }
+            keys.forEach(key => { try { localStorage.removeItem(key); removedLocal++; } catch (_) {} });
+        } catch (_) {}
+
+        let removedCaches = 0;
+        try {
+            if (targetWin.caches?.keys) {
+                const names = await targetWin.caches.keys();
+                for (const name of names) {
+                    const lower = String(name).toLowerCase();
+                    if (['apv', 'arv', 'flowmusic', 'flow-music', 'music-player'].some(x => lower.includes(x))) {
+                        try { if (await targetWin.caches.delete(name)) removedCaches++; } catch (_) {}
+                    }
+                }
+            }
+        } catch (_) {}
+
+        API.toast(`播放器旧缓存清理完成：本地旧数据 ${removedLocal} 项，Cache Storage ${removedCaches} 项。`);
+    };
+
+    UI.cacheCleanBtn.onclick = async () => {
+        if (!confirm('清理播放器旧版本沉积缓存？\n\n当前歌单、壁纸、装修小图、字体设置都会保留。')) return;
+        UI.cacheCleanBtn.disabled = true;
+        try { await cleanAccumulatedPlayerCache(); } finally { UI.cacheCleanBtn.disabled = false; }
+    };
+
     UI.bgClearBtn.onclick = () => {
         savedSettings.bgImage = '';
         savedSettings.bgImageWidth = 0;
@@ -3043,12 +3120,15 @@
 
     UI.bgBlurSlider.oninput = (e) => {
         savedSettings.bgBlur = e.target.value;
-        applySettings();
+        // 壁纸可能是数 MB 的 base64；拖动滑块时绝对不要同步 JSON.stringify + localStorage。
+        applySettings(false);
+        scheduleSettingsSave();
     };
 
     UI.bgBrightnessSlider.oninput = (e) => {
         savedSettings.bgBrightness = e.target.value;
-        applySettings();
+        applySettings(false);
+        scheduleSettingsSave();
     };
 
     audio.onplay = () => {
@@ -3106,7 +3186,8 @@
         if (!menu) return false;
 
         const old = doc.querySelector('#arv_terminal_wand_container');
-        if (old) old.remove();
+        // 已经安装就直接复用，不要每 500ms 删除/重建一次 DOM。
+        if (old) return true;
 
         const container = doc.createElement('div');
         container.id = 'arv_terminal_wand_container';
@@ -3164,7 +3245,7 @@
                 clearInterval(menuRetryTimer);
                 menuRetryTimer = null;
             }
-        }, 500);
+        }, 1000);
         menuRetryStopTimer = setTimeout(() => {
             if (menuRetryTimer) clearInterval(menuRetryTimer);
             menuRetryTimer = null;
@@ -3176,6 +3257,9 @@
     const cleanupPlayerInstance = () => {
         try { if (audio) { audio.pause(); audio.src = ''; audio = null; } } catch (_) {}
         try { if (lrcRafId) cancelAnimationFrame(lrcRafId); } catch (_) {}
+        try { if (progressRafId) cancelAnimationFrame(progressRafId); } catch (_) {}
+        try { if (lyricHostSyncRaf) cancelAnimationFrame(lyricHostSyncRaf); } catch (_) {}
+        try { clearTimeout(localSearchTimer); } catch (_) {}
         try { stopLyricsTimer(); } catch (_) {}
         try { clearTimeout(settingsSaveTimer); } catch (_) {}
         try { if (menuRetryTimer) clearInterval(menuRetryTimer); } catch (_) {}
