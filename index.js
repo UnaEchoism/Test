@@ -32,7 +32,6 @@
         DEFAULT_THEME: 'adaptive',
         STORAGE_KEY: 'apv_terminal_playlist_data',
         SETTINGS_KEY: 'apv_terminal_settings',
-        ASSETS_KEY: 'apv_terminal_assets',
         MAX_TRACKS_PER_LIST: 1000 // 防卡死：单列表最大歌曲数
     };
 
@@ -117,40 +116,18 @@
     }
 
     // 读取本地设置
-    let savedSettings = {
-        ballSize: 50, customColor: '#4a90e2', bgImageWidth: 0, bgImageHeight: 0,
-        bgBlur: 10, bgBrightness: 70, lrcMode: 'popup', lrcFont: 16, lrcBottom: 80,
-        lrcFontName: '默认字体', lrcFontFamily: '', lrcFontCss: '', lrcFontId: '', lrcFontUrl: '',
+    let savedSettings = { 
+        ballSize: 50, customColor: '#4a90e2', bgImage: '', bgImageWidth: 0, bgImageHeight: 0, 
+        bgBlur: 10, bgBrightness: 70, lrcMode: 'popup', lrcFont: 16, lrcBottom: 80, lrcFontName: '默认字体', lrcFontFamily: '', lrcFontCss: '', lrcFontId: '', lrcFontUrl: '', 
         panelRatio: 'default', shapeStyle: 'round', theme: 'adaptive',
-        nowPlayingLabel: 'NOW PLAYING', showBall: true
+        nowCoverImage: '', nowPlayingLabel: 'NOW PLAYING', showBall: true
     };
-    let savedAssets = { bgImage: '', nowCoverImage: '' };
-    let migratedInlineAssets = false;
     try {
         const s = localStorage.getItem(CONFIG.SETTINGS_KEY);
-        if (s) {
-            const parsed = JSON.parse(s);
-            if (parsed && typeof parsed === 'object') {
-                savedSettings = { ...savedSettings, ...parsed };
-                if (typeof parsed.bgImage === 'string' && parsed.bgImage) { savedAssets.bgImage = parsed.bgImage; migratedInlineAssets = true; }
-                if (typeof parsed.nowCoverImage === 'string' && parsed.nowCoverImage) { savedAssets.nowCoverImage = parsed.nowCoverImage; migratedInlineAssets = true; }
-                delete savedSettings.bgImage;
-                delete savedSettings.nowCoverImage;
-            }
-        }
-        const a = localStorage.getItem(CONFIG.ASSETS_KEY);
-        if (a) {
-            const parsedAssets = JSON.parse(a);
-            if (parsedAssets && typeof parsedAssets === 'object') savedAssets = { ...savedAssets, ...parsedAssets };
-        }
+        if (s) savedSettings = { ...savedSettings, ...JSON.parse(s) };
     } catch(e) {}
+    // 旧版本的字体设置仅作兼容清理，不再参与任何功能。
     delete savedSettings.customFont;
-    if (migratedInlineAssets) {
-        try {
-            localStorage.setItem(CONFIG.ASSETS_KEY, JSON.stringify(savedAssets));
-            localStorage.setItem(CONFIG.SETTINGS_KEY, JSON.stringify(savedSettings));
-        } catch (_) {}
-    }
 
     // ================= 状态管理 =================
     const STATE = {
@@ -394,6 +371,12 @@
     };
 
     // ================= UI 构建 =================
+    // 如果旧实例还挂着，先执行完整清理；仅 remove DOM 不会停止旧 audio / rAF / 事件。
+    try {
+        if (typeof targetWin.__apvPlayerCleanup === 'function') {
+            targetWin.__apvPlayerCleanup();
+        }
+    } catch (_) {}
     const oldContainer = targetDoc.getElementById(CONFIG.ID);
     if (oldContainer) oldContainer.remove();
 
@@ -405,6 +388,8 @@
         position: fixed; top: 0; left: 0;
         width: 1px; height: 1px;
         overflow: visible; pointer-events: none; z-index: ${CONFIG.Z_INDEX};
+        /* 只做 style containment。不能用 strict/layout/paint：这个 1×1 宿主允许内部 fixed UI 溢出到视口。 */
+        contain: style;
     `;
     targetDoc.body.appendChild(container);
 
@@ -412,9 +397,7 @@
 
     const faLink = targetDoc.createElement('link');
     faLink.rel = 'stylesheet';
-    faLink.media = 'print';
     faLink.href = 'https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css';
-    faLink.onload = () => { faLink.media = 'all'; };
     shadow.appendChild(faLink);
 
     const style = targetDoc.createElement('style');
@@ -1003,15 +986,6 @@
                             <div class="fm-range-with-icon"><i class="fas fa-sun"></i><input type="range" class="fm-bg-slider" id="fm-bg-brightness" min="10" max="150" value="70"></div>
                         </div>
                     </div>
-
-                    <div class="fm-settings-section">
-                        <div class="fm-settings-section-title">清理播放器缓存</div>
-                        <div class="fm-more-row">
-                            <span>清除旧版本沉积数据</span>
-                            <button class="fm-bg-btn" id="fm-cache-clean-btn"><i class="fas fa-broom"></i> 清理</button>
-                        </div>
-                        <div class="fm-card-sub">只清理播放器旧缓存/Cache Storage，不会删除当前歌单、壁纸、装修小图或当前设置。</div>
-                    </div>
                 </section>
             </main>
 
@@ -1082,7 +1056,6 @@
         ratioBtn: wrapper.querySelector('#fm-bg-btn-ratio'),
         bgBlurSlider: wrapper.querySelector('#fm-bg-blur'),
         bgBrightnessSlider: wrapper.querySelector('#fm-bg-brightness'),
-        cacheCleanBtn: wrapper.querySelector('#fm-cache-clean-btn'),
         outLyrics: wrapper.querySelector('#fm-out-lyrics'),
         progressTrack: wrapper.querySelector('#fm-progress-track'),
         progressFill: wrapper.querySelector('#fm-progress-fill'),
@@ -1113,6 +1086,7 @@
         z-index: 2147483647;
         contain: layout paint style;
         isolation: isolate;
+        display: none;
     `;
     targetDoc.body.appendChild(lyricHost);
     const lyricShadow = lyricHost.attachShadow({ mode: 'open' });
@@ -1184,23 +1158,12 @@
     UI.lyricHost = lyricHost;
     UI.lyricShadow = lyricShadow;
 
-    // 性能：不要在每次滑块 input 时同步读取 computedStyle。
-    // getComputedStyle 可能触发样式计算/布局，歌词层又是独立 DOM，因此改成
-    // 首次同步 + rAF 合并同步，并且只写入真正变化的变量。
-    const lyricHostVarNames = ['--fm-font','--fm-lrc-font','--fm-lrc-bottom','--fm-lrc-family','--fm-bg','--fm-text-main','--fm-text-sub','--fm-accent','--fm-border','--fm-shadow'];
-    let lyricHostSyncRaf = null;
     const syncLyricHostVars = () => {
-        if (lyricHostSyncRaf) return;
-        lyricHostSyncRaf = targetWin.requestAnimationFrame(() => {
-            lyricHostSyncRaf = null;
-            const cs = targetWin.getComputedStyle(UI.wrapper);
-            lyricHostVarNames.forEach((name) => {
-                const value = cs.getPropertyValue(name).trim();
-                if (!value) return;
-                if (lyricHost.style.getPropertyValue(name) !== value) {
-                    lyricHost.style.setProperty(name, value);
-                }
-            });
+        const names = ['--fm-font','--fm-lrc-font','--fm-lrc-bottom','--fm-lrc-family','--fm-bg','--fm-text-main','--fm-text-sub','--fm-accent','--fm-border','--fm-shadow'];
+        const cs = targetWin.getComputedStyle(UI.wrapper);
+        names.forEach((name) => {
+            const value = cs.getPropertyValue(name).trim();
+            if (value) lyricHost.style.setProperty(name, value);
         });
     };
     syncLyricHostVars();
@@ -1322,17 +1285,16 @@
         return promise;
     };
 
-    let lastAppliedLrcFontKey = null;
-    const getLrcFontKey = (font) => font ? `${font.name || ''}|${font.family || ''}|${font.css || ''}|${font.id || ''}` : 'default';
-    const setLrcFontVisual = (font, force = false) => {
-        const key = getLrcFontKey(font);
-        if (!force && key === lastAppliedLrcFontKey) return;
-        lastAppliedLrcFontKey = key;
+    const setLrcFontVisual = (font) => {
         const family = font?.family || '';
-        const safeFamily = family ? `"${family.replace(/"/g,'\"')}"` : '';
-        const value = safeFamily || 'var(--fm-font)';
-        UI.wrapper.style.setProperty('--fm-lrc-family', value);
-        if (UI.lyricHost) UI.lyricHost.style.setProperty('--fm-lrc-family', value);
+        const safeFamily = family ? `"${family.replace(/"/g,'\\"')}"` : '';
+        UI.wrapper.style.setProperty('--fm-lrc-family', safeFamily || 'var(--fm-font)');
+        if (UI.lyricHost) UI.lyricHost.style.setProperty('--fm-lrc-family', safeFamily || 'var(--fm-font)');
+        const lyricRoots = [UI.outLyrics, UI.outLyricsScroll, UI.outLyricsScrollList].filter(Boolean);
+        lyricRoots.forEach(root => {
+            root.style.setProperty('font-family', safeFamily || 'var(--fm-font)', 'important');
+            root.querySelectorAll('*').forEach(el => el.style.setProperty('font-family', safeFamily || 'var(--fm-font)', 'important'));
+        });
         if (UI.lrcFontCurrent) {
             UI.lrcFontCurrent.value = font?.name || '默认字体';
             UI.lrcFontCurrent.style.fontFamily = safeFamily || '';
@@ -1340,7 +1302,7 @@
     };
 
     const applyLrcFont = (font, persist = true) => {
-        setLrcFontVisual(font, true);
+        setLrcFontVisual(font);
         if (persist) {
             savedSettings.lrcFontName = font?.name || '默认字体';
             savedSettings.lrcFontFamily = font?.family || '';
@@ -1579,7 +1541,7 @@
         if (STATE.isExpanded) {
             container.style.display = 'block';
             UI.panel.style.display = 'flex';
-            applySettings(false);
+            applySettings();
             const activeLrcFont = getSavedLrcFont();
             if (activeLrcFont) {
                 ensureZeoFontLoaded(activeLrcFont).then(ok => {
@@ -1668,22 +1630,12 @@
         return `${m}:${s < 10 ? '0' : ''}${s}`;
     }
 
-    let progressRafId = null;
-    let pendingProgress = null;
     function updateProgressUI(current, duration) {
-        pendingProgress = { current, duration };
-        if (progressRafId) return;
-        progressRafId = targetWin.requestAnimationFrame(() => {
-            progressRafId = null;
-            const p = pendingProgress;
-            pendingProgress = null;
-            if (!p) return;
-            const pct = (p.duration && isFinite(p.duration) && p.duration > 0) ? Math.min(100, Math.max(0, (p.current / p.duration) * 100)) : 0;
-            UI.progressFill.style.width = `${pct}%`;
-            UI.progressThumb.style.left = `${pct}%`;
-            UI.timeCurrent.textContent = formatTime(p.current);
-            UI.timeDuration.textContent = formatTime(p.duration);
-        });
+        const pct = (duration && isFinite(duration) && duration > 0) ? Math.min(100, Math.max(0, (current / duration) * 100)) : 0;
+        UI.progressFill.style.width = `${pct}%`;
+        UI.progressThumb.style.left = `${pct}%`;
+        UI.timeCurrent.textContent = formatTime(current);
+        UI.timeDuration.textContent = formatTime(duration);
     }
 
     function initProgressBar() {
@@ -2033,13 +1985,6 @@
         }
     }
 
-    function updateActiveTrackHighlight() {
-        if (!UI.playlistEl) return;
-        UI.playlistEl.querySelectorAll('.fm-item[data-track-index]').forEach((el) => {
-            el.classList.toggle('active', el.dataset.playlistId === STATE.playingPlaylistId && Number(el.dataset.trackIndex) === STATE.currentIndex);
-        });
-    }
-
     function renderListUI() {
         if (!STATE.isExpanded) {
             STATE.uiNeedsRender = true;
@@ -2065,7 +2010,7 @@
             UI.playlistEl.appendChild(header);
 
             if (STATE.searchResults.length === 0) {
-                const empty = targetDoc.createElement('div'); empty.style.cssText = 'padding:16px;text-align:center;color:var(--fm-text-sub);font-size:12px;'; empty.textContent = '未找到相关歌曲'; UI.playlistEl.appendChild(empty);
+                UI.playlistEl.innerHTML += '<div style="padding:16px;text-align:center;color:var(--fm-text-sub);font-size:12px;">未找到相关歌曲</div>';
                 return;
             }
 
@@ -2133,7 +2078,7 @@
             UI.playlistEl.appendChild(header);
 
             if (listToRender.length === 0) {
-                const empty = targetDoc.createElement('div'); empty.style.cssText = 'padding:16px;text-align:center;color:var(--fm-text-sub);font-size:12px;'; empty.textContent = '未找到匹配的歌曲'; UI.playlistEl.appendChild(empty);
+                UI.playlistEl.innerHTML += '<div style="padding:16px;text-align:center;color:var(--fm-text-sub);font-size:12px;">未找到匹配的歌曲</div>';
                 return;
             }
 
@@ -2141,8 +2086,6 @@
                 const isActive = (STATE.playingPlaylistId === currentListObj.id && index === STATE.currentIndex);
                 const item = targetDoc.createElement('div');
                 item.className = `fm-item ${isActive ? 'active' : ''}`;
-                item.dataset.trackIndex = String(index);
-                item.dataset.playlistId = currentListObj.id;
                 item.innerHTML = `
                     <div class="fm-item-info">
                         <span class="fm-item-title">${escapeHTML(track.title)}</span>
@@ -2224,7 +2167,7 @@
         
         UI.title.textContent = track.title;
         UI.artist.textContent = track.artist;
-        updateActiveTrackHighlight();
+        renderListUI();
 
         audio.pause(); audio.src = '';
         STATE.lyricsData = []; UI.outLyrics.innerHTML = ''; UI.outLyricsScrollList.innerHTML = ''; STATE.lastActiveLrcIndex = -1; STATE.lastRenderedScrollIndex = -1;
@@ -2617,6 +2560,10 @@
         const inactive = (active === UI.outLyrics) ? UI.outLyricsScroll : UI.outLyrics;
         inactive.classList.remove('show');
         active.classList.toggle('show', STATE.isLyricsVisible);
+        // 歌词关闭时，不只隐藏内容，也让 document.body 上的 fixed 宿主退出渲染树。
+        if (lyricHost) {
+            lyricHost.style.display = STATE.isLyricsVisible ? 'block' : 'none';
+        }
     }
 
     UI.lrcToggleBtn.onclick = () => {
@@ -2786,15 +2733,11 @@
     UI.input.onkeypress = (e) => {
         if (e.key === 'Enter') UI.addBtn.click();
     };
-    let localSearchTimer = null;
     UI.input.oninput = () => {
-        if (STATE.currentInputMode !== 'search_local') return;
-        clearTimeout(localSearchTimer);
-        const keyword = UI.input.value.trim().toLowerCase();
-        localSearchTimer = setTimeout(() => {
-            STATE.localSearchKeyword = keyword;
+        if (STATE.currentInputMode === 'search_local') {
+            STATE.localSearchKeyword = UI.input.value.trim().toLowerCase();
             renderListUI();
-        }, 120);
+        }
     };
 
     const THEME_DEFAULT_COLORS = {
@@ -2828,38 +2771,45 @@
     };
 
     let settingsSaveTimer = null;
-    let assetsSaveTimer = null;
-    const saveAssets = () => {
-        try { localStorage.setItem(CONFIG.ASSETS_KEY, JSON.stringify(savedAssets)); }
-        catch (e) { if (e.name === 'QuotaExceededError' || e.name === 'NS_ERROR_DOM_QUOTA_REACHED') API.toast('图片保存失败：本地存储空间不足，请清理播放器旧缓存或缩小图片。'); }
-    };
-    const scheduleAssetsSave = () => {
-        clearTimeout(assetsSaveTimer);
-        assetsSaveTimer = setTimeout(saveAssets, 350);
-    };
     const saveSettings = () => {
-        try { localStorage.setItem(CONFIG.SETTINGS_KEY, JSON.stringify(savedSettings)); }
-        catch (e) { if (e.name === 'QuotaExceededError' || e.name === 'NS_ERROR_DOM_QUOTA_REACHED') API.toast('设置保存失败：本地存储空间不足。图片已独立保存，不会因为普通设置保存失败而被自动删除。'); }
+        try {
+            localStorage.setItem(CONFIG.SETTINGS_KEY, JSON.stringify(savedSettings));
+        } catch (e) {
+            if (e.name === 'QuotaExceededError' || e.name === 'NS_ERROR_DOM_QUOTA_REACHED') {
+                API.toast("保存失败：图片体积过大，超出了浏览器本地存储限制。请清除壁纸或装修小图后重试。");
+                savedSettings.nowCoverImage = '';
+                if (UI.nowCover) {
+                    UI.nowCover.replaceChildren();
+                    const icon = targetWin.document.createElement('i');
+                    icon.className = 'fas fa-compact-disc';
+                    UI.nowCover.appendChild(icon);
+                }
+                if (UI.decorationPreviewCover) {
+                    UI.decorationPreviewCover.replaceChildren();
+                    const icon = targetWin.document.createElement('i');
+                    icon.className = 'fas fa-compact-disc';
+                    UI.decorationPreviewCover.appendChild(icon);
+                }
+                savedSettings.bgImage = '';
+                UI.wrapper.style.setProperty('--fm-bg-image', 'none');
+            }
+        }
     };
     const scheduleSettingsSave = () => {
         clearTimeout(settingsSaveTimer);
         settingsSaveTimer = setTimeout(saveSettings, 250);
     };
 
-    let lastDecorationKey = null;
-    const applyDecoration = (force = false) => {
+    const applyDecoration = () => {
         const label = String(savedSettings.nowPlayingLabel || '').trim() || 'NOW PLAYING';
-        const key = `${label}\n${savedAssets.nowCoverImage || ''}`;
-        if (!force && key === lastDecorationKey) return;
-        lastDecorationKey = key;
         if (UI.nowPlayingLabel) UI.nowPlayingLabel.textContent = label;
 
         const renderCover = (container) => {
             if (!container) return;
             container.replaceChildren();
-            if (savedAssets.nowCoverImage) {
+            if (savedSettings.nowCoverImage) {
                 const img = targetWin.document.createElement('img');
-                img.src = savedAssets.nowCoverImage;
+                img.src = savedSettings.nowCoverImage;
                 img.alt = '';
                 img.draggable = false;
                 container.appendChild(img);
@@ -2924,29 +2874,26 @@
         if (!STATE.isExpanded) container.style.display = savedSettings.showBall === false ? 'none' : 'block';
         UI.wrapper.style.setProperty('--fm-custom-color', savedSettings.customColor);
         
-        if (UI.shapeBtn.dataset.shape !== savedSettings.shapeStyle) {
-            UI.shapeBtn.dataset.shape = savedSettings.shapeStyle;
-            if (savedSettings.shapeStyle === 'square') {
-                UI.wrapper.style.setProperty('--fm-radius-ball', '8px');
-                UI.wrapper.style.setProperty('--fm-radius-panel', '0px');
-                UI.wrapper.style.setProperty('--fm-radius-btn', '4px');
-                UI.wrapper.style.setProperty('--fm-radius-input', '0px');
-                UI.wrapper.style.setProperty('--fm-radius-thumb', '2px');
-                UI.shapeBtn.innerHTML = '<i class="fas fa-circle"></i>';
-                UI.shapeBtn.title = "切换为圆润外观";
-            } else {
-                UI.wrapper.style.setProperty('--fm-radius-ball', '50%');
-                UI.wrapper.style.setProperty('--fm-radius-panel', '24px');
-                UI.wrapper.style.setProperty('--fm-radius-btn', '50%');
-                UI.wrapper.style.setProperty('--fm-radius-input', '8px');
-                UI.wrapper.style.setProperty('--fm-radius-thumb', '50%');
-                UI.shapeBtn.innerHTML = '<i class="fas fa-square"></i>';
-                UI.shapeBtn.title = "切换为方正外观";
-            }
+        if (savedSettings.shapeStyle === 'square') {
+            UI.wrapper.style.setProperty('--fm-radius-ball', '8px');
+            UI.wrapper.style.setProperty('--fm-radius-panel', '0px');
+            UI.wrapper.style.setProperty('--fm-radius-btn', '4px');
+            UI.wrapper.style.setProperty('--fm-radius-input', '0px');
+            UI.wrapper.style.setProperty('--fm-radius-thumb', '2px');
+            UI.shapeBtn.innerHTML = '<i class="fas fa-circle"></i>';
+            UI.shapeBtn.title = "切换为圆润外观";
+        } else {
+            UI.wrapper.style.setProperty('--fm-radius-ball', '50%');
+            UI.wrapper.style.setProperty('--fm-radius-panel', '24px');
+            UI.wrapper.style.setProperty('--fm-radius-btn', '50%');
+            UI.wrapper.style.setProperty('--fm-radius-input', '8px');
+            UI.wrapper.style.setProperty('--fm-radius-thumb', '50%');
+            UI.shapeBtn.innerHTML = '<i class="fas fa-square"></i>';
+            UI.shapeBtn.title = "切换为方正外观";
         }
         
-        if (savedAssets.bgImage) {
-            UI.wrapper.style.setProperty('--fm-bg-image', `url(${savedAssets.bgImage})`);
+        if (savedSettings.bgImage) {
+            UI.wrapper.style.setProperty('--fm-bg-image', `url(${savedSettings.bgImage})`);
         } else {
             UI.wrapper.style.setProperty('--fm-bg-image', 'none');
         }
@@ -2956,17 +2903,21 @@
         UI.wrapper.style.setProperty('--fm-lrc-bottom', `${savedSettings.lrcBottom}px`);
         syncLyricHostVars();
         const savedLrcFont = getSavedLrcFont();
-        const lrcFontKey = getLrcFontKey(savedLrcFont);
-        if (lrcFontKey !== lastAppliedLrcFontKey) {
-            if (savedLrcFont) ensureZeoFontLoaded(savedLrcFont).then((ok) => { if (ok) setLrcFontVisual(savedLrcFont); });
-            else setLrcFontVisual(null);
+        if (savedLrcFont) {
+            ensureZeoFontLoaded(savedLrcFont).then((ok) => {
+                if (ok) applyLrcFont(savedLrcFont, false);
+            });
+        } else {
+            applyLrcFont(null, false);
         }
 
-        if (UI.ratioBtn.dataset.ratio !== savedSettings.panelRatio) {
-            UI.ratioBtn.dataset.ratio = savedSettings.panelRatio;
-            if (savedSettings.panelRatio === '3:4') UI.ratioBtn.innerHTML = '<i class="fas fa-crop-alt"></i> 3:4';
-            else if (savedSettings.panelRatio === '9:16') UI.ratioBtn.innerHTML = '<i class="fas fa-crop-alt"></i> 9:16';
-            else UI.ratioBtn.innerHTML = '<i class="fas fa-crop-alt"></i> 自适应';
+        // 修复：面板比例应用逻辑
+        if (savedSettings.panelRatio === '3:4') {
+            UI.ratioBtn.innerHTML = '<i class="fas fa-crop-alt"></i> 3:4';
+        } else if (savedSettings.panelRatio === '9:16') {
+            UI.ratioBtn.innerHTML = '<i class="fas fa-crop-alt"></i> 9:16';
+        } else {
+            UI.ratioBtn.innerHTML = '<i class="fas fa-crop-alt"></i> 自适应';
         }
 
         // 智能强调色应用逻辑：
@@ -3023,9 +2974,8 @@
         const file = e.target.files[0];
         if (!file) return;
         try {
-            savedAssets.nowCoverImage = await readSmallImage(file, 256);
-            applySettings(false);
-            scheduleAssetsSave();
+            savedSettings.nowCoverImage = await readSmallImage(file, 256);
+            applySettings();
             API.toast('播放器装修小图已更新');
         } catch (err) {
             if (err && err.message === 'TOO_LARGE') {
@@ -3039,9 +2989,8 @@
     };
 
     UI.decorationClearBtn.onclick = () => {
-        savedAssets.nowCoverImage = '';
-        applySettings(false);
-        scheduleAssetsSave();
+        savedSettings.nowCoverImage = '';
+        applySettings();
         API.toast('已恢复默认唱片图标');
     };
 
@@ -3062,12 +3011,10 @@
             const imgData = event.target.result;
             const tempImg = new Image();
             tempImg.onload = () => {
-                savedAssets.bgImage = imgData;
+                savedSettings.bgImage = imgData;
                 savedSettings.bgImageWidth = tempImg.naturalWidth;
                 savedSettings.bgImageHeight = tempImg.naturalHeight;
-                applySettings(false);
-                scheduleAssetsSave();
-                scheduleSettingsSave();
+                applySettings();
                 
                 if (STATE.isExpanded && savedSettings.panelRatio === 'default') {
                     // 强制重新计算高度
@@ -3081,63 +3028,11 @@
         reader.readAsDataURL(file);
     };
 
-    const cleanAccumulatedPlayerCache = async () => {
-        const removablePrefixes = ['apv_', 'apv-terminal-', 'arv_', 'flowmusic_', 'flow_music_'];
-        let removedLocal = 0;
-        try {
-            const keys = [];
-            for (let i = 0; i < localStorage.length; i++) {
-                const key = localStorage.key(i);
-                if (!key) continue;
-                const lower = key.toLowerCase();
-                // 当前正在使用的两个存储项必须保留。
-                if (key === CONFIG.STORAGE_KEY || key === CONFIG.SETTINGS_KEY || key === CONFIG.ASSETS_KEY) continue;
-                if (removablePrefixes.some(prefix => lower.startsWith(prefix))) keys.push(key);
-            }
-            keys.forEach(key => { try { localStorage.removeItem(key); removedLocal++; } catch (_) {} });
-        } catch (_) {}
-
-        let removedSession = 0;
-        try {
-            const sessionKeys = [];
-            for (let i = 0; i < targetWin.sessionStorage.length; i++) {
-                const key = targetWin.sessionStorage.key(i);
-                if (!key) continue;
-                const lower = key.toLowerCase();
-                if (key !== CONFIG.STORAGE_KEY && key !== CONFIG.SETTINGS_KEY && key !== CONFIG.ASSETS_KEY && /^(apv|arv|flowmusic|flow_music|music-player)[_-]/.test(lower)) sessionKeys.push(key);
-            }
-            sessionKeys.forEach(key => { try { targetWin.sessionStorage.removeItem(key); removedSession++; } catch (_) {} });
-        } catch (_) {}
-
-        let removedCaches = 0;
-        try {
-            if (targetWin.caches?.keys) {
-                const names = await targetWin.caches.keys();
-                for (const name of names) {
-                    const lower = String(name).toLowerCase();
-                    if (['apv', 'arv', 'flowmusic', 'flow-music', 'music-player'].some(x => lower.includes(x))) {
-                        try { if (await targetWin.caches.delete(name)) removedCaches++; } catch (_) {}
-                    }
-                }
-            }
-        } catch (_) {}
-
-        API.toast(`播放器旧缓存清理完成：本地旧数据 ${removedLocal} 项，Session 数据 ${removedSession} 项，Cache Storage ${removedCaches} 项。`);
-    };
-
-    UI.cacheCleanBtn.onclick = async () => {
-        if (!confirm('清理播放器旧版本沉积缓存？\n\n当前歌单、壁纸、装修小图、字体设置都会保留。')) return;
-        UI.cacheCleanBtn.disabled = true;
-        try { await cleanAccumulatedPlayerCache(); } finally { UI.cacheCleanBtn.disabled = false; }
-    };
-
     UI.bgClearBtn.onclick = () => {
-        savedAssets.bgImage = '';
+        savedSettings.bgImage = '';
         savedSettings.bgImageWidth = 0;
         savedSettings.bgImageHeight = 0;
-        applySettings(false);
-        scheduleAssetsSave();
-        scheduleSettingsSave();
+        applySettings();
         
         if (STATE.isExpanded && savedSettings.panelRatio === 'default') {
             togglePanel();
@@ -3161,15 +3056,12 @@
 
     UI.bgBlurSlider.oninput = (e) => {
         savedSettings.bgBlur = e.target.value;
-        // 壁纸可能是数 MB 的 base64；拖动滑块时绝对不要同步 JSON.stringify + localStorage。
-        applySettings(false);
-        scheduleSettingsSave();
+        applySettings();
     };
 
     UI.bgBrightnessSlider.oninput = (e) => {
         savedSettings.bgBrightness = e.target.value;
-        applySettings(false);
-        scheduleSettingsSave();
+        applySettings();
     };
 
     audio.onplay = () => {
@@ -3178,6 +3070,7 @@
         UI.ball.classList.add('playing');
         if (lrcRafId) cancelAnimationFrame(lrcRafId);
         stopLyricsTimer();
+        if (lyricHost) lyricHost.style.display = STATE.isLyricsVisible ? 'block' : 'none';
         updateLyrics();
         scheduleLyricsUpdate();
     };
@@ -3187,6 +3080,7 @@
         UI.ball.classList.remove('playing');
         if (lrcRafId) cancelAnimationFrame(lrcRafId);
         stopLyricsTimer();
+        if (lyricHost) lyricHost.style.display = 'none';
     };
     audio.onended = () => {
         if (STATE.playMode === 'repeat_one') { audio.currentTime = 0; audio.play(); }
@@ -3227,8 +3121,7 @@
         if (!menu) return false;
 
         const old = doc.querySelector('#arv_terminal_wand_container');
-        // 已经安装就直接复用，不要每 500ms 删除/重建一次 DOM。
-        if (old) return true;
+        if (old) old.remove();
 
         const container = doc.createElement('div');
         container.id = 'arv_terminal_wand_container';
@@ -3271,27 +3164,26 @@
         savedSettings.showBall = savedSettings.showBall === false;
         applySettings();
     };
+    const playerToggleEvent = (typeof getButtonEvent === 'function') ? getButtonEvent('显隐播放器') : null;
 
-    if (typeof eventOn === 'function' && typeof getButtonEvent === 'function') {
-        eventOn(getButtonEvent('显隐播放器'), targetWin._flowMusicToggle);
+    if (typeof eventOn === 'function' && playerToggleEvent) {
+        eventOn(playerToggleEvent, targetWin._flowMusicToggle);
     }
 
     // SillyTavern 的输入框扩展菜单（扳手/魔法棒菜单）只需要放一个入口，
     // 点击入口后打开播放器自己的完整面板，不把播放器 UI 塞进菜单。
-    let menuObserver = null;
+    let menuRetryTimer = null;
     let menuRetryStopTimer = null;
-    if (!installSillyTavernWandButton() && targetWin.MutationObserver) {
-        menuObserver = new targetWin.MutationObserver(() => {
+    if (!installSillyTavernWandButton()) {
+        menuRetryTimer = setInterval(() => {
             if (installSillyTavernWandButton()) {
-                try { menuObserver.disconnect(); } catch (_) {}
-                menuObserver = null;
-                if (menuRetryStopTimer) { clearTimeout(menuRetryStopTimer); menuRetryStopTimer = null; }
+                clearInterval(menuRetryTimer);
+                menuRetryTimer = null;
             }
-        });
-        menuObserver.observe(targetDoc.body, { childList: true, subtree: true });
+        }, 500);
         menuRetryStopTimer = setTimeout(() => {
-            try { menuObserver?.disconnect(); } catch (_) {}
-            menuObserver = null;
+            if (menuRetryTimer) clearInterval(menuRetryTimer);
+            menuRetryTimer = null;
             menuRetryStopTimer = null;
         }, 15000);
     }
@@ -3300,15 +3192,11 @@
     const cleanupPlayerInstance = () => {
         try { if (audio) { audio.pause(); audio.src = ''; audio = null; } } catch (_) {}
         try { if (lrcRafId) cancelAnimationFrame(lrcRafId); } catch (_) {}
-        try { if (progressRafId) cancelAnimationFrame(progressRafId); } catch (_) {}
-        try { if (lyricHostSyncRaf) cancelAnimationFrame(lyricHostSyncRaf); } catch (_) {}
-        try { clearTimeout(localSearchTimer); } catch (_) {}
         try { stopLyricsTimer(); } catch (_) {}
         try { clearTimeout(settingsSaveTimer); } catch (_) {}
-        try { clearTimeout(assetsSaveTimer); } catch (_) {}
-        try { menuObserver?.disconnect(); menuObserver = null; } catch (_) {}
+        try { if (menuRetryTimer) clearInterval(menuRetryTimer); } catch (_) {}
         try { if (menuRetryStopTimer) clearTimeout(menuRetryStopTimer); } catch (_) {}
-        try { saveSettings(); saveAssets(); } catch (_) {}
+        try { saveSettings(); } catch (_) {}
         try { targetDoc.querySelectorAll('link[id^="fm-zeofont-"]').forEach(link => link.remove()); } catch (_) {}
         try { targetDoc.querySelectorAll('link[id^="fm-zeofont-inspect-"]').forEach(link => link.remove()); } catch (_) {}
         try {
@@ -3320,12 +3208,9 @@
             if (menuItem) menuItem.remove();
         } catch (_) {}
         try {
-            const toggleEvent = typeof getButtonEvent === 'function' ? getButtonEvent('显隐播放器') : null;
-            const handler = targetWin._flowMusicToggle;
-            if (handler && toggleEvent) {
-                if (typeof eventRemove === 'function') eventRemove(toggleEvent, handler);
-                else if (typeof eventOff === 'function') eventOff(toggleEvent, handler);
-                else if (typeof eventRemoveListener === 'function') eventRemoveListener(toggleEvent, handler);
+            const off = targetWin.eventRemove || targetWin.eventOff || targetWin.eventRemoveListener;
+            if (typeof off === 'function' && playerToggleEvent && targetWin._flowMusicToggle) {
+                off(playerToggleEvent, targetWin._flowMusicToggle);
             }
         } catch (_) {}
         try { delete targetWin._flowMusicToggle; } catch (_) {}
