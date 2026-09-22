@@ -380,6 +380,15 @@
     const oldContainer = targetDoc.getElementById(CONFIG.ID);
     if (oldContainer) oldContainer.remove();
 
+    // TauriTavern/WebView 与移动端 SillyTavern 对 fixed + Shadow DOM 的渲染路径不同。
+    // 兼容策略：TT 走懒挂载；普通 ST 保持原先歌词宿主常驻，避免移动端歌词在重挂载后丢失。
+    const IS_TAURI_TAVERN = !!(
+        targetWin.__TAURI__ ||
+        targetWin.__TAURI_INTERNALS__ ||
+        /tauri/i.test(String(targetWin.navigator?.userAgent || ''))
+    );
+    const USE_LAZY_LYRIC_HOST = IS_TAURI_TAVERN;
+
     const container = targetDoc.createElement('div');
     container.id = CONFIG.ID;
     // 性能关键：宿主本身不再覆盖整个视口。播放器的 ball/panel 仍可通过 overflow:visible
@@ -1095,7 +1104,8 @@
         isolation: isolate;
         display: none;
     `;
-    // 懒挂载：暂停或关闭歌词时，歌词 fixed 宿主直接从 body 移除。
+    // TT 使用懒挂载；普通 ST 保持歌词宿主常驻，只切换 display。
+    // 这样可以避开 TT 的 fixed/Shadow DOM 重挂载问题，同时恢复移动端 ST 的歌词显示。
     const ensureLyricHostMounted = () => {
         if (!lyricHost.isConnected && targetDoc.body) targetDoc.body.appendChild(lyricHost);
     };
@@ -1103,6 +1113,10 @@
         if (lyricHost.isConnected) lyricHost.remove();
     };
     const shouldMountLyrics = () => STATE.isLyricsVisible && audio && !audio.paused;
+
+    if (!USE_LAZY_LYRIC_HOST && targetDoc.body) {
+        targetDoc.body.appendChild(lyricHost);
+    }
 
     const lyricShadow = lyricHost.attachShadow({ mode: 'open' });
     const lyricStyle = targetDoc.createElement('style');
@@ -2582,14 +2596,19 @@
         const inactive = (active === UI.outLyrics) ? UI.outLyricsScroll : UI.outLyrics;
         inactive.classList.remove('show');
         active.classList.toggle('show', STATE.isLyricsVisible);
-        // 歌词关闭/暂停时，不只隐藏内容，直接把 fixed 宿主从 document.body 移除。
         if (lyricHost) {
-            if (shouldMountLyrics()) {
-                ensureLyricHostMounted();
-                lyricHost.style.display = 'block';
+            if (USE_LAZY_LYRIC_HOST) {
+                if (shouldMountLyrics()) {
+                    ensureLyricHostMounted();
+                    lyricHost.style.display = 'block';
+                } else {
+                    lyricHost.style.display = 'none';
+                    unmountLyricHost();
+                }
             } else {
-                lyricHost.style.display = 'none';
-                unmountLyricHost();
+                // 普通 ST：宿主常驻，避免移动端 WebView 对 Shadow DOM 重挂载后不再绘制歌词。
+                ensureLyricHostMounted();
+                lyricHost.style.display = STATE.isLyricsVisible ? 'block' : 'none';
             }
         }
     }
@@ -3119,13 +3138,8 @@
         if (lrcRafId) cancelAnimationFrame(lrcRafId);
         stopLyricsTimer();
         if (lyricHost) {
-            if (STATE.isLyricsVisible) {
-                ensureLyricHostMounted();
-                lyricHost.style.display = 'block';
-            } else {
-                lyricHost.style.display = 'none';
-                unmountLyricHost();
-            }
+            ensureLyricHostMounted();
+            lyricHost.style.display = STATE.isLyricsVisible ? 'block' : 'none';
         }
         updateLyrics();
         scheduleLyricsUpdate();
@@ -3138,7 +3152,7 @@
         stopLyricsTimer();
         if (lyricHost) {
             lyricHost.style.display = 'none';
-            unmountLyricHost();
+            if (USE_LAZY_LYRIC_HOST) unmountLyricHost();
         }
     };
     audio.onended = () => {
