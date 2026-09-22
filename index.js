@@ -32,6 +32,7 @@
         DEFAULT_THEME: 'adaptive',
         STORAGE_KEY: 'apv_terminal_playlist_data',
         SETTINGS_KEY: 'apv_terminal_settings',
+        ASSETS_KEY: 'apv_terminal_assets',
         MAX_TRACKS_PER_LIST: 1000 // 防卡死：单列表最大歌曲数
     };
 
@@ -116,18 +117,40 @@
     }
 
     // 读取本地设置
-    let savedSettings = { 
-        ballSize: 50, customColor: '#4a90e2', bgImage: '', bgImageWidth: 0, bgImageHeight: 0, 
-        bgBlur: 10, bgBrightness: 70, lrcMode: 'popup', lrcFont: 16, lrcBottom: 80, lrcFontName: '默认字体', lrcFontFamily: '', lrcFontCss: '', lrcFontId: '', lrcFontUrl: '', 
+    let savedSettings = {
+        ballSize: 50, customColor: '#4a90e2', bgImageWidth: 0, bgImageHeight: 0,
+        bgBlur: 10, bgBrightness: 70, lrcMode: 'popup', lrcFont: 16, lrcBottom: 80,
+        lrcFontName: '默认字体', lrcFontFamily: '', lrcFontCss: '', lrcFontId: '', lrcFontUrl: '',
         panelRatio: 'default', shapeStyle: 'round', theme: 'adaptive',
-        nowCoverImage: '', nowPlayingLabel: 'NOW PLAYING', showBall: true
+        nowPlayingLabel: 'NOW PLAYING', showBall: true
     };
+    let savedAssets = { bgImage: '', nowCoverImage: '' };
+    let migratedInlineAssets = false;
     try {
         const s = localStorage.getItem(CONFIG.SETTINGS_KEY);
-        if (s) savedSettings = { ...savedSettings, ...JSON.parse(s) };
+        if (s) {
+            const parsed = JSON.parse(s);
+            if (parsed && typeof parsed === 'object') {
+                savedSettings = { ...savedSettings, ...parsed };
+                if (typeof parsed.bgImage === 'string' && parsed.bgImage) { savedAssets.bgImage = parsed.bgImage; migratedInlineAssets = true; }
+                if (typeof parsed.nowCoverImage === 'string' && parsed.nowCoverImage) { savedAssets.nowCoverImage = parsed.nowCoverImage; migratedInlineAssets = true; }
+                delete savedSettings.bgImage;
+                delete savedSettings.nowCoverImage;
+            }
+        }
+        const a = localStorage.getItem(CONFIG.ASSETS_KEY);
+        if (a) {
+            const parsedAssets = JSON.parse(a);
+            if (parsedAssets && typeof parsedAssets === 'object') savedAssets = { ...savedAssets, ...parsedAssets };
+        }
     } catch(e) {}
-    // 旧版本的字体设置仅作兼容清理，不再参与任何功能。
     delete savedSettings.customFont;
+    if (migratedInlineAssets) {
+        try {
+            localStorage.setItem(CONFIG.ASSETS_KEY, JSON.stringify(savedAssets));
+            localStorage.setItem(CONFIG.SETTINGS_KEY, JSON.stringify(savedSettings));
+        } catch (_) {}
+    }
 
     // ================= 状态管理 =================
     const STATE = {
@@ -389,7 +412,9 @@
 
     const faLink = targetDoc.createElement('link');
     faLink.rel = 'stylesheet';
+    faLink.media = 'print';
     faLink.href = 'https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css';
+    faLink.onload = () => { faLink.media = 'all'; };
     shadow.appendChild(faLink);
 
     const style = targetDoc.createElement('style');
@@ -1297,16 +1322,17 @@
         return promise;
     };
 
-    const setLrcFontVisual = (font) => {
+    let lastAppliedLrcFontKey = null;
+    const getLrcFontKey = (font) => font ? `${font.name || ''}|${font.family || ''}|${font.css || ''}|${font.id || ''}` : 'default';
+    const setLrcFontVisual = (font, force = false) => {
+        const key = getLrcFontKey(font);
+        if (!force && key === lastAppliedLrcFontKey) return;
+        lastAppliedLrcFontKey = key;
         const family = font?.family || '';
-        const safeFamily = family ? `"${family.replace(/"/g,'\\"')}"` : '';
-        UI.wrapper.style.setProperty('--fm-lrc-family', safeFamily || 'var(--fm-font)');
-        if (UI.lyricHost) UI.lyricHost.style.setProperty('--fm-lrc-family', safeFamily || 'var(--fm-font)');
-        const lyricRoots = [UI.outLyrics, UI.outLyricsScroll, UI.outLyricsScrollList].filter(Boolean);
-        lyricRoots.forEach(root => {
-            root.style.setProperty('font-family', safeFamily || 'var(--fm-font)', 'important');
-            root.querySelectorAll('*').forEach(el => el.style.setProperty('font-family', safeFamily || 'var(--fm-font)', 'important'));
-        });
+        const safeFamily = family ? `"${family.replace(/"/g,'\"')}"` : '';
+        const value = safeFamily || 'var(--fm-font)';
+        UI.wrapper.style.setProperty('--fm-lrc-family', value);
+        if (UI.lyricHost) UI.lyricHost.style.setProperty('--fm-lrc-family', value);
         if (UI.lrcFontCurrent) {
             UI.lrcFontCurrent.value = font?.name || '默认字体';
             UI.lrcFontCurrent.style.fontFamily = safeFamily || '';
@@ -1314,7 +1340,7 @@
     };
 
     const applyLrcFont = (font, persist = true) => {
-        setLrcFontVisual(font);
+        setLrcFontVisual(font, true);
         if (persist) {
             savedSettings.lrcFontName = font?.name || '默认字体';
             savedSettings.lrcFontFamily = font?.family || '';
@@ -2007,6 +2033,13 @@
         }
     }
 
+    function updateActiveTrackHighlight() {
+        if (!UI.playlistEl) return;
+        UI.playlistEl.querySelectorAll('.fm-item[data-track-index]').forEach((el) => {
+            el.classList.toggle('active', el.dataset.playlistId === STATE.playingPlaylistId && Number(el.dataset.trackIndex) === STATE.currentIndex);
+        });
+    }
+
     function renderListUI() {
         if (!STATE.isExpanded) {
             STATE.uiNeedsRender = true;
@@ -2032,7 +2065,7 @@
             UI.playlistEl.appendChild(header);
 
             if (STATE.searchResults.length === 0) {
-                UI.playlistEl.innerHTML += '<div style="padding:16px;text-align:center;color:var(--fm-text-sub);font-size:12px;">未找到相关歌曲</div>';
+                const empty = targetDoc.createElement('div'); empty.style.cssText = 'padding:16px;text-align:center;color:var(--fm-text-sub);font-size:12px;'; empty.textContent = '未找到相关歌曲'; UI.playlistEl.appendChild(empty);
                 return;
             }
 
@@ -2100,7 +2133,7 @@
             UI.playlistEl.appendChild(header);
 
             if (listToRender.length === 0) {
-                UI.playlistEl.innerHTML += '<div style="padding:16px;text-align:center;color:var(--fm-text-sub);font-size:12px;">未找到匹配的歌曲</div>';
+                const empty = targetDoc.createElement('div'); empty.style.cssText = 'padding:16px;text-align:center;color:var(--fm-text-sub);font-size:12px;'; empty.textContent = '未找到匹配的歌曲'; UI.playlistEl.appendChild(empty);
                 return;
             }
 
@@ -2108,6 +2141,8 @@
                 const isActive = (STATE.playingPlaylistId === currentListObj.id && index === STATE.currentIndex);
                 const item = targetDoc.createElement('div');
                 item.className = `fm-item ${isActive ? 'active' : ''}`;
+                item.dataset.trackIndex = String(index);
+                item.dataset.playlistId = currentListObj.id;
                 item.innerHTML = `
                     <div class="fm-item-info">
                         <span class="fm-item-title">${escapeHTML(track.title)}</span>
@@ -2189,7 +2224,7 @@
         
         UI.title.textContent = track.title;
         UI.artist.textContent = track.artist;
-        renderListUI();
+        updateActiveTrackHighlight();
 
         audio.pause(); audio.src = '';
         STATE.lyricsData = []; UI.outLyrics.innerHTML = ''; UI.outLyricsScrollList.innerHTML = ''; STATE.lastActiveLrcIndex = -1; STATE.lastRenderedScrollIndex = -1;
@@ -2793,29 +2828,18 @@
     };
 
     let settingsSaveTimer = null;
+    let assetsSaveTimer = null;
+    const saveAssets = () => {
+        try { localStorage.setItem(CONFIG.ASSETS_KEY, JSON.stringify(savedAssets)); }
+        catch (e) { if (e.name === 'QuotaExceededError' || e.name === 'NS_ERROR_DOM_QUOTA_REACHED') API.toast('图片保存失败：本地存储空间不足，请清理播放器旧缓存或缩小图片。'); }
+    };
+    const scheduleAssetsSave = () => {
+        clearTimeout(assetsSaveTimer);
+        assetsSaveTimer = setTimeout(saveAssets, 350);
+    };
     const saveSettings = () => {
-        try {
-            localStorage.setItem(CONFIG.SETTINGS_KEY, JSON.stringify(savedSettings));
-        } catch (e) {
-            if (e.name === 'QuotaExceededError' || e.name === 'NS_ERROR_DOM_QUOTA_REACHED') {
-                API.toast("保存失败：图片体积过大，超出了浏览器本地存储限制。请清除壁纸或装修小图后重试。");
-                savedSettings.nowCoverImage = '';
-                if (UI.nowCover) {
-                    UI.nowCover.replaceChildren();
-                    const icon = targetWin.document.createElement('i');
-                    icon.className = 'fas fa-compact-disc';
-                    UI.nowCover.appendChild(icon);
-                }
-                if (UI.decorationPreviewCover) {
-                    UI.decorationPreviewCover.replaceChildren();
-                    const icon = targetWin.document.createElement('i');
-                    icon.className = 'fas fa-compact-disc';
-                    UI.decorationPreviewCover.appendChild(icon);
-                }
-                savedSettings.bgImage = '';
-                UI.wrapper.style.setProperty('--fm-bg-image', 'none');
-            }
-        }
+        try { localStorage.setItem(CONFIG.SETTINGS_KEY, JSON.stringify(savedSettings)); }
+        catch (e) { if (e.name === 'QuotaExceededError' || e.name === 'NS_ERROR_DOM_QUOTA_REACHED') API.toast('设置保存失败：本地存储空间不足。图片已独立保存，不会因为普通设置保存失败而被自动删除。'); }
     };
     const scheduleSettingsSave = () => {
         clearTimeout(settingsSaveTimer);
@@ -2825,7 +2849,7 @@
     let lastDecorationKey = null;
     const applyDecoration = (force = false) => {
         const label = String(savedSettings.nowPlayingLabel || '').trim() || 'NOW PLAYING';
-        const key = `${label}\n${savedSettings.nowCoverImage || ''}`;
+        const key = `${label}\n${savedAssets.nowCoverImage || ''}`;
         if (!force && key === lastDecorationKey) return;
         lastDecorationKey = key;
         if (UI.nowPlayingLabel) UI.nowPlayingLabel.textContent = label;
@@ -2833,9 +2857,9 @@
         const renderCover = (container) => {
             if (!container) return;
             container.replaceChildren();
-            if (savedSettings.nowCoverImage) {
+            if (savedAssets.nowCoverImage) {
                 const img = targetWin.document.createElement('img');
-                img.src = savedSettings.nowCoverImage;
+                img.src = savedAssets.nowCoverImage;
                 img.alt = '';
                 img.draggable = false;
                 container.appendChild(img);
@@ -2900,26 +2924,29 @@
         if (!STATE.isExpanded) container.style.display = savedSettings.showBall === false ? 'none' : 'block';
         UI.wrapper.style.setProperty('--fm-custom-color', savedSettings.customColor);
         
-        if (savedSettings.shapeStyle === 'square') {
-            UI.wrapper.style.setProperty('--fm-radius-ball', '8px');
-            UI.wrapper.style.setProperty('--fm-radius-panel', '0px');
-            UI.wrapper.style.setProperty('--fm-radius-btn', '4px');
-            UI.wrapper.style.setProperty('--fm-radius-input', '0px');
-            UI.wrapper.style.setProperty('--fm-radius-thumb', '2px');
-            UI.shapeBtn.innerHTML = '<i class="fas fa-circle"></i>';
-            UI.shapeBtn.title = "切换为圆润外观";
-        } else {
-            UI.wrapper.style.setProperty('--fm-radius-ball', '50%');
-            UI.wrapper.style.setProperty('--fm-radius-panel', '24px');
-            UI.wrapper.style.setProperty('--fm-radius-btn', '50%');
-            UI.wrapper.style.setProperty('--fm-radius-input', '8px');
-            UI.wrapper.style.setProperty('--fm-radius-thumb', '50%');
-            UI.shapeBtn.innerHTML = '<i class="fas fa-square"></i>';
-            UI.shapeBtn.title = "切换为方正外观";
+        if (UI.shapeBtn.dataset.shape !== savedSettings.shapeStyle) {
+            UI.shapeBtn.dataset.shape = savedSettings.shapeStyle;
+            if (savedSettings.shapeStyle === 'square') {
+                UI.wrapper.style.setProperty('--fm-radius-ball', '8px');
+                UI.wrapper.style.setProperty('--fm-radius-panel', '0px');
+                UI.wrapper.style.setProperty('--fm-radius-btn', '4px');
+                UI.wrapper.style.setProperty('--fm-radius-input', '0px');
+                UI.wrapper.style.setProperty('--fm-radius-thumb', '2px');
+                UI.shapeBtn.innerHTML = '<i class="fas fa-circle"></i>';
+                UI.shapeBtn.title = "切换为圆润外观";
+            } else {
+                UI.wrapper.style.setProperty('--fm-radius-ball', '50%');
+                UI.wrapper.style.setProperty('--fm-radius-panel', '24px');
+                UI.wrapper.style.setProperty('--fm-radius-btn', '50%');
+                UI.wrapper.style.setProperty('--fm-radius-input', '8px');
+                UI.wrapper.style.setProperty('--fm-radius-thumb', '50%');
+                UI.shapeBtn.innerHTML = '<i class="fas fa-square"></i>';
+                UI.shapeBtn.title = "切换为方正外观";
+            }
         }
         
-        if (savedSettings.bgImage) {
-            UI.wrapper.style.setProperty('--fm-bg-image', `url(${savedSettings.bgImage})`);
+        if (savedAssets.bgImage) {
+            UI.wrapper.style.setProperty('--fm-bg-image', `url(${savedAssets.bgImage})`);
         } else {
             UI.wrapper.style.setProperty('--fm-bg-image', 'none');
         }
@@ -2929,21 +2956,17 @@
         UI.wrapper.style.setProperty('--fm-lrc-bottom', `${savedSettings.lrcBottom}px`);
         syncLyricHostVars();
         const savedLrcFont = getSavedLrcFont();
-        if (savedLrcFont) {
-            ensureZeoFontLoaded(savedLrcFont).then((ok) => {
-                if (ok) applyLrcFont(savedLrcFont, false);
-            });
-        } else {
-            applyLrcFont(null, false);
+        const lrcFontKey = getLrcFontKey(savedLrcFont);
+        if (lrcFontKey !== lastAppliedLrcFontKey) {
+            if (savedLrcFont) ensureZeoFontLoaded(savedLrcFont).then((ok) => { if (ok) setLrcFontVisual(savedLrcFont); });
+            else setLrcFontVisual(null);
         }
 
-        // 修复：面板比例应用逻辑
-        if (savedSettings.panelRatio === '3:4') {
-            UI.ratioBtn.innerHTML = '<i class="fas fa-crop-alt"></i> 3:4';
-        } else if (savedSettings.panelRatio === '9:16') {
-            UI.ratioBtn.innerHTML = '<i class="fas fa-crop-alt"></i> 9:16';
-        } else {
-            UI.ratioBtn.innerHTML = '<i class="fas fa-crop-alt"></i> 自适应';
+        if (UI.ratioBtn.dataset.ratio !== savedSettings.panelRatio) {
+            UI.ratioBtn.dataset.ratio = savedSettings.panelRatio;
+            if (savedSettings.panelRatio === '3:4') UI.ratioBtn.innerHTML = '<i class="fas fa-crop-alt"></i> 3:4';
+            else if (savedSettings.panelRatio === '9:16') UI.ratioBtn.innerHTML = '<i class="fas fa-crop-alt"></i> 9:16';
+            else UI.ratioBtn.innerHTML = '<i class="fas fa-crop-alt"></i> 自适应';
         }
 
         // 智能强调色应用逻辑：
@@ -3000,8 +3023,9 @@
         const file = e.target.files[0];
         if (!file) return;
         try {
-            savedSettings.nowCoverImage = await readSmallImage(file, 256);
-            applySettings();
+            savedAssets.nowCoverImage = await readSmallImage(file, 256);
+            applySettings(false);
+            scheduleAssetsSave();
             API.toast('播放器装修小图已更新');
         } catch (err) {
             if (err && err.message === 'TOO_LARGE') {
@@ -3015,8 +3039,9 @@
     };
 
     UI.decorationClearBtn.onclick = () => {
-        savedSettings.nowCoverImage = '';
-        applySettings();
+        savedAssets.nowCoverImage = '';
+        applySettings(false);
+        scheduleAssetsSave();
         API.toast('已恢复默认唱片图标');
     };
 
@@ -3037,10 +3062,12 @@
             const imgData = event.target.result;
             const tempImg = new Image();
             tempImg.onload = () => {
-                savedSettings.bgImage = imgData;
+                savedAssets.bgImage = imgData;
                 savedSettings.bgImageWidth = tempImg.naturalWidth;
                 savedSettings.bgImageHeight = tempImg.naturalHeight;
-                applySettings();
+                applySettings(false);
+                scheduleAssetsSave();
+                scheduleSettingsSave();
                 
                 if (STATE.isExpanded && savedSettings.panelRatio === 'default') {
                     // 强制重新计算高度
@@ -3064,10 +3091,22 @@
                 if (!key) continue;
                 const lower = key.toLowerCase();
                 // 当前正在使用的两个存储项必须保留。
-                if (key === CONFIG.STORAGE_KEY || key === CONFIG.SETTINGS_KEY) continue;
+                if (key === CONFIG.STORAGE_KEY || key === CONFIG.SETTINGS_KEY || key === CONFIG.ASSETS_KEY) continue;
                 if (removablePrefixes.some(prefix => lower.startsWith(prefix))) keys.push(key);
             }
             keys.forEach(key => { try { localStorage.removeItem(key); removedLocal++; } catch (_) {} });
+        } catch (_) {}
+
+        let removedSession = 0;
+        try {
+            const sessionKeys = [];
+            for (let i = 0; i < targetWin.sessionStorage.length; i++) {
+                const key = targetWin.sessionStorage.key(i);
+                if (!key) continue;
+                const lower = key.toLowerCase();
+                if (key !== CONFIG.STORAGE_KEY && key !== CONFIG.SETTINGS_KEY && key !== CONFIG.ASSETS_KEY && /^(apv|arv|flowmusic|flow_music|music-player)[_-]/.test(lower)) sessionKeys.push(key);
+            }
+            sessionKeys.forEach(key => { try { targetWin.sessionStorage.removeItem(key); removedSession++; } catch (_) {} });
         } catch (_) {}
 
         let removedCaches = 0;
@@ -3083,7 +3122,7 @@
             }
         } catch (_) {}
 
-        API.toast(`播放器旧缓存清理完成：本地旧数据 ${removedLocal} 项，Cache Storage ${removedCaches} 项。`);
+        API.toast(`播放器旧缓存清理完成：本地旧数据 ${removedLocal} 项，Session 数据 ${removedSession} 项，Cache Storage ${removedCaches} 项。`);
     };
 
     UI.cacheCleanBtn.onclick = async () => {
@@ -3093,10 +3132,12 @@
     };
 
     UI.bgClearBtn.onclick = () => {
-        savedSettings.bgImage = '';
+        savedAssets.bgImage = '';
         savedSettings.bgImageWidth = 0;
         savedSettings.bgImageHeight = 0;
-        applySettings();
+        applySettings(false);
+        scheduleAssetsSave();
+        scheduleSettingsSave();
         
         if (STATE.isExpanded && savedSettings.panelRatio === 'default') {
             togglePanel();
@@ -3237,18 +3278,20 @@
 
     // SillyTavern 的输入框扩展菜单（扳手/魔法棒菜单）只需要放一个入口，
     // 点击入口后打开播放器自己的完整面板，不把播放器 UI 塞进菜单。
-    let menuRetryTimer = null;
+    let menuObserver = null;
     let menuRetryStopTimer = null;
-    if (!installSillyTavernWandButton()) {
-        menuRetryTimer = setInterval(() => {
+    if (!installSillyTavernWandButton() && targetWin.MutationObserver) {
+        menuObserver = new targetWin.MutationObserver(() => {
             if (installSillyTavernWandButton()) {
-                clearInterval(menuRetryTimer);
-                menuRetryTimer = null;
+                try { menuObserver.disconnect(); } catch (_) {}
+                menuObserver = null;
+                if (menuRetryStopTimer) { clearTimeout(menuRetryStopTimer); menuRetryStopTimer = null; }
             }
-        }, 1000);
+        });
+        menuObserver.observe(targetDoc.body, { childList: true, subtree: true });
         menuRetryStopTimer = setTimeout(() => {
-            if (menuRetryTimer) clearInterval(menuRetryTimer);
-            menuRetryTimer = null;
+            try { menuObserver?.disconnect(); } catch (_) {}
+            menuObserver = null;
             menuRetryStopTimer = null;
         }, 15000);
     }
@@ -3262,9 +3305,10 @@
         try { clearTimeout(localSearchTimer); } catch (_) {}
         try { stopLyricsTimer(); } catch (_) {}
         try { clearTimeout(settingsSaveTimer); } catch (_) {}
-        try { if (menuRetryTimer) clearInterval(menuRetryTimer); } catch (_) {}
+        try { clearTimeout(assetsSaveTimer); } catch (_) {}
+        try { menuObserver?.disconnect(); menuObserver = null; } catch (_) {}
         try { if (menuRetryStopTimer) clearTimeout(menuRetryStopTimer); } catch (_) {}
-        try { saveSettings(); } catch (_) {}
+        try { saveSettings(); saveAssets(); } catch (_) {}
         try { targetDoc.querySelectorAll('link[id^="fm-zeofont-"]').forEach(link => link.remove()); } catch (_) {}
         try { targetDoc.querySelectorAll('link[id^="fm-zeofont-inspect-"]').forEach(link => link.remove()); } catch (_) {}
         try {
@@ -3274,6 +3318,15 @@
             if (oldLyrics) oldLyrics.remove();
             const menuItem = targetDoc.getElementById('arv_terminal_wand_container');
             if (menuItem) menuItem.remove();
+        } catch (_) {}
+        try {
+            const toggleEvent = typeof getButtonEvent === 'function' ? getButtonEvent('显隐播放器') : null;
+            const handler = targetWin._flowMusicToggle;
+            if (handler && toggleEvent) {
+                if (typeof eventRemove === 'function') eventRemove(toggleEvent, handler);
+                else if (typeof eventOff === 'function') eventOff(toggleEvent, handler);
+                else if (typeof eventRemoveListener === 'function') eventRemoveListener(toggleEvent, handler);
+            }
         } catch (_) {}
         try { delete targetWin._flowMusicToggle; } catch (_) {}
         if (targetWin.__apvPlayerCleanup === cleanupPlayerInstance) {
