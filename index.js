@@ -113,14 +113,14 @@
         ballSize: 50, customColor: '#4a90e2', bgImage: '', bgImageWidth: 0, bgImageHeight: 0, 
         bgBlur: 10, bgBrightness: 70, lrcMode: 'popup', lrcFont: 16, lrcBottom: 80, 
         panelRatio: 'default', shapeStyle: 'round', theme: 'adaptive',
+        lrcFontName: '默认字体', lrcFontFamily: '', lrcFontCss: '', lrcFontId: '', lrcFontUrl: '',
         nowCoverImage: '', nowPlayingLabel: 'NOW PLAYING', showBall: true
     };
     try {
         const s = localStorage.getItem(CONFIG.SETTINGS_KEY);
         if (s) savedSettings = { ...savedSettings, ...JSON.parse(s) };
     } catch(e) {}
-    // 旧版本的字体设置仅作兼容清理，不再参与任何功能。
-    delete savedSettings.customFont;
+
 
     // ================= 状态管理 =================
     const STATE = {
@@ -547,6 +547,25 @@
             filter: blur(var(--fm-bg-blur, 0px)) brightness(var(--fm-bg-brightness, 100%));
         }
 
+
+        /* 桌面歌词自定义字体：只作用于桌面歌词，不改变播放器其它文字。 */
+        .fm-lrc-font-row { display:flex; align-items:flex-start; gap:10px; }
+        .fm-lrc-font-picker { flex:1; min-width:0; display:flex; flex-direction:column; gap:7px; }
+        .fm-lrc-font-current { width:100%; min-width:0; height:32px; box-sizing:border-box; border:1px solid var(--fm-border); background:var(--fm-panel); color:var(--fm-text-main); border-radius:var(--fm-radius-input); padding:6px 10px; font-size:12px; outline:none; }
+        .fm-lrc-font-url-row { display:flex; gap:6px; width:100%; }
+        .fm-lrc-font-url { flex:1; min-width:0; height:32px; box-sizing:border-box; border:1px solid var(--fm-border); background:var(--fm-panel); color:var(--fm-text-main); border-radius:var(--fm-radius-input); padding:6px 10px; font-size:11px; outline:none; }
+        .fm-lrc-font-url::placeholder { color:var(--fm-text-sub); opacity:.8; }
+        .fm-lrc-font-url:focus { border-color:var(--fm-accent); }
+        .fm-lrc-font-import { flex:0 0 auto; height:32px; border:0; border-radius:var(--fm-radius-input); padding:0 11px; background:var(--fm-accent); color:#fff; font-size:11px; cursor:pointer; }
+        .fm-lrc-font-import:disabled { opacity:.55; cursor:wait; }
+        .fm-lrc-font-reset { width:100%; height:32px; margin-top:7px; border:0; border-radius:9px; background:rgba(0,0,0,.045); color:var(--fm-text-sub); cursor:pointer; font-size:10px; transition:background .18s ease,color .18s ease; }
+        .fm-lrc-font-reset:hover { background:rgba(0,0,0,.08); color:var(--fm-text-main); }
+        .fm-lrc-font-reset:disabled { opacity:.55; cursor:default; }
+        .fm-lrc-font-hint { font-size:9px; color:var(--fm-text-sub); line-height:1.45; }
+        .fm-out-lyrics, .fm-out-lyrics *, .fm-out-lyrics-scroll, .fm-out-lyrics-scroll * {
+            font-family: var(--fm-lrc-family, var(--fm-font)) !important;
+        }
+
         .fm-bg-btn { background: var(--fm-border); color: var(--fm-text-main); border: none; border-radius: var(--fm-radius-input); padding: 4px 8px; font-size: 11px; cursor: pointer; transition: var(--fm-transition); display: flex; align-items: center; gap: 4px; white-space: nowrap; }
         .fm-bg-btn:hover { background: var(--fm-accent); color: #fff; }
         .fm-bg-sliders { display: flex; flex: 1; align-items: center; gap: 10px; min-width: 120px; }
@@ -560,6 +579,25 @@
             pointer-events: none; transition: filter 0.3s;
             background-image: var(--fm-bg-image, none);
             filter: blur(var(--fm-bg-blur, 0px)) brightness(var(--fm-bg-brightness, 100%));
+        }
+
+
+        /* 桌面歌词自定义字体：只作用于桌面歌词，不改变播放器其它文字。 */
+        .fm-lrc-font-row { display:flex; align-items:flex-start; gap:10px; }
+        .fm-lrc-font-picker { flex:1; min-width:0; display:flex; flex-direction:column; gap:7px; }
+        .fm-lrc-font-current { width:100%; min-width:0; height:32px; box-sizing:border-box; border:1px solid var(--fm-border); background:var(--fm-panel); color:var(--fm-text-main); border-radius:var(--fm-radius-input); padding:6px 10px; font-size:12px; outline:none; }
+        .fm-lrc-font-url-row { display:flex; gap:6px; width:100%; }
+        .fm-lrc-font-url { flex:1; min-width:0; height:32px; box-sizing:border-box; border:1px solid var(--fm-border); background:var(--fm-panel); color:var(--fm-text-main); border-radius:var(--fm-radius-input); padding:6px 10px; font-size:11px; outline:none; }
+        .fm-lrc-font-url::placeholder { color:var(--fm-text-sub); opacity:.8; }
+        .fm-lrc-font-url:focus { border-color:var(--fm-accent); }
+        .fm-lrc-font-import { flex:0 0 auto; height:32px; border:0; border-radius:var(--fm-radius-input); padding:0 11px; background:var(--fm-accent); color:#fff; font-size:11px; cursor:pointer; }
+        .fm-lrc-font-import:disabled { opacity:.55; cursor:wait; }
+        .fm-lrc-font-reset { width:100%; height:32px; margin-top:7px; border:0; border-radius:9px; background:rgba(0,0,0,.045); color:var(--fm-text-sub); cursor:pointer; font-size:10px; transition:background .18s ease,color .18s ease; }
+        .fm-lrc-font-reset:hover { background:rgba(0,0,0,.08); color:var(--fm-text-main); }
+        .fm-lrc-font-reset:disabled { opacity:.55; cursor:default; }
+        .fm-lrc-font-hint { font-size:9px; color:var(--fm-text-sub); line-height:1.45; }
+        .fm-out-lyrics, .fm-out-lyrics *, .fm-out-lyrics-scroll, .fm-out-lyrics-scroll * {
+            font-family: var(--fm-lrc-family, var(--fm-font)) !important;
         }
 
         .fm-out-lyrics {
@@ -866,6 +904,18 @@
                                     <span class="fm-lrc-settings-label">位置</span>
                                     <input type="range" id="fm-lrc-bottom-slider" min="40" max="400" step="5">
                                 </div>
+                                <div class="fm-lrc-settings-row fm-lrc-font-row">
+                                    <span class="fm-lrc-settings-label">字体</span>
+                                    <div class="fm-lrc-font-picker">
+                                        <input class="fm-lrc-font-current" id="fm-lrc-font-current" type="text" value="默认字体" readonly aria-label="当前桌面歌词字体">
+                                        <div class="fm-lrc-font-url-row">
+                                            <input class="fm-lrc-font-url" id="fm-lrc-font-url" type="url" placeholder="粘贴 ZeoSeven 字体详情页 URL" autocomplete="off" aria-label="ZeoSeven 字体网址">
+                                            <button class="fm-lrc-font-import" id="fm-lrc-font-import" type="button">导入</button>
+                                        </div>
+                                        <button class="fm-lrc-font-reset" id="fm-lrc-font-reset" type="button">恢复默认字体</button>
+                                        <div class="fm-lrc-font-hint">例如：https://fonts.zeoseven.com/items/217/　只会应用到桌面歌词</div>
+                                    </div>
+                                </div>
                             </div>
                         </div>
                     </div>
@@ -976,6 +1026,10 @@
         lrcModeFallBtn: wrapper.querySelector('#fm-lrc-mode-fall'),
         lrcFontSlider: wrapper.querySelector('#fm-lrc-font-slider'),
         lrcBottomSlider: wrapper.querySelector('#fm-lrc-bottom-slider'),
+        lrcFontCurrent: wrapper.querySelector('#fm-lrc-font-current'),
+        lrcFontUrl: wrapper.querySelector('#fm-lrc-font-url'),
+        lrcFontImport: wrapper.querySelector('#fm-lrc-font-import'),
+        lrcFontReset: wrapper.querySelector('#fm-lrc-font-reset'),
         outLyricsScroll: wrapper.querySelector('#fm-out-lyrics-scroll'),
         outLyricsScrollList: wrapper.querySelector('#fm-lrc-scroll-list'),
         sourceSelect: wrapper.querySelector('#fm-source-select'),
@@ -2322,6 +2376,193 @@
         settingsSaveTimer = setTimeout(saveSettings, 250);
     };
 
+    // ================= 桌面歌词字体 =================
+    // 只接受用户主动提供的 ZeoSeven 字体详情页 / FontsAPI URL。
+    const loadedFontCss = new Set();
+    const loadingFontCss = new Map();
+
+    const extractFontFamilyFromRules = (rules) => {
+        try {
+            for (const rule of Array.from(rules || [])) {
+                if (rule.type === targetWin.CSSRule.FONT_FACE_RULE || rule.cssText?.startsWith('@font-face')) {
+                    const family = rule.style?.getPropertyValue('font-family') || '';
+                    if (family.trim()) return family.trim().replace(/^['"]|['"]$/g, '');
+                }
+                if (rule.cssRules) {
+                    const nested = extractFontFamilyFromRules(rule.cssRules);
+                    if (nested) return nested;
+                }
+            }
+        } catch (_) {}
+        return '';
+    };
+
+    const parseZeoSevenUrl = (rawUrl) => {
+        let url;
+        try { url = new URL(String(rawUrl || '').trim()); } catch (_) { return null; }
+        const host = url.hostname.toLowerCase();
+        if (host !== 'fonts.zeoseven.com' && host !== 'www.fonts.zeoseven.com' && host !== 'fontsapi.zeoseven.com') return null;
+        if (host === 'fonts.zeoseven.com' || host === 'www.fonts.zeoseven.com') {
+            const m = url.pathname.match(/^\/items\/([^/]+)\/?$/i);
+            if (!m) return null;
+            const id = decodeURIComponent(m[1]);
+            return { id, css: `https://fontsapi.zeoseven.com/${encodeURIComponent(id)}/main/result.css`, pageUrl: `https://fonts.zeoseven.com/items/${encodeURIComponent(id)}/` };
+        }
+        const m = url.pathname.match(/^\/([^/]+)\/main\/result\.css$/i);
+        if (!m) return null;
+        const id = decodeURIComponent(m[1]);
+        return { id, css: url.href, pageUrl: `https://fonts.zeoseven.com/items/${encodeURIComponent(id)}/` };
+    };
+
+    const loadZeoCssAndReadFamily = (cssUrl, timeout = 7000) => new Promise((resolve) => {
+        let settled = false;
+        let timer = null;
+        const finish = (family) => {
+            if (settled) return;
+            settled = true;
+            if (timer) clearTimeout(timer);
+            resolve(family || '');
+        };
+        const id = 'fm-zeofont-inspect-' + btoa(unescape(encodeURIComponent(cssUrl))).replace(/[^a-zA-Z0-9]/g,'').slice(-28);
+        const old = targetDoc.getElementById(id);
+        if (old) { try { old.remove(); } catch (_) {} }
+        const link = targetDoc.createElement('link');
+        link.id = id;
+        link.rel = 'stylesheet';
+        link.href = cssUrl;
+        link.crossOrigin = 'anonymous';
+        timer = setTimeout(() => finish(''), timeout);
+        link.onload = () => {
+            let family = '';
+            try { family = extractFontFamilyFromRules(link.sheet?.cssRules); } catch (_) {}
+            finish(family);
+        };
+        link.onerror = () => finish('');
+        (targetDoc.head || targetDoc.documentElement).appendChild(link);
+    });
+
+    const ensureZeoFontLoaded = (font) => {
+        if (!font?.css || !font?.family) return Promise.resolve(false);
+        if (loadedFontCss.has(font.css)) return Promise.resolve(true);
+        if (loadingFontCss.has(font.css)) return loadingFontCss.get(font.css);
+        const promise = new Promise((resolve) => {
+            let settled = false;
+            let timer = null;
+            const finish = (ok) => {
+                if (settled) return;
+                settled = true;
+                if (timer) clearTimeout(timer);
+                if (ok) loadedFontCss.add(font.css);
+                loadingFontCss.delete(font.css);
+                resolve(ok);
+            };
+            const id = 'fm-zeofont-' + btoa(unescape(encodeURIComponent(font.css))).replace(/[^a-zA-Z0-9]/g,'').slice(-28);
+            const old = targetDoc.getElementById(id);
+            if (old) { loadedFontCss.add(font.css); finish(true); return; }
+            const link = targetDoc.createElement('link');
+            link.id = id;
+            link.rel = 'stylesheet';
+            link.href = font.css;
+            link.crossOrigin = 'anonymous';
+            timer = setTimeout(() => finish(false), 7000);
+            link.onload = async () => {
+                try {
+                    if (targetDoc.fonts?.load) {
+                        await Promise.race([
+                            targetDoc.fonts.load(`16px "${font.family.replace(/"/g, '\\"')}"`),
+                            new Promise(r => setTimeout(r, 1800))
+                        ]);
+                    }
+                } catch (_) {}
+                finish(true);
+            };
+            link.onerror = () => finish(false);
+            (targetDoc.head || targetDoc.documentElement).appendChild(link);
+        });
+        loadingFontCss.set(font.css, promise);
+        return promise;
+    };
+
+    const setLrcFontVisual = (font) => {
+        const family = font?.family || '';
+        const safeFamily = family ? `"${family.replace(/"/g,'\\"')}"` : '';
+        UI.wrapper.style.setProperty('--fm-lrc-family', safeFamily || 'var(--fm-font)');
+        const lyricRoots = [UI.outLyrics, UI.outLyricsScroll, UI.outLyricsScrollList].filter(Boolean);
+        lyricRoots.forEach(root => {
+            root.style.setProperty('font-family', safeFamily || 'var(--fm-font)', 'important');
+            root.querySelectorAll('*').forEach(el => el.style.setProperty('font-family', safeFamily || 'var(--fm-font)', 'important'));
+        });
+        if (UI.lrcFontCurrent) {
+            UI.lrcFontCurrent.value = font?.name || '默认字体';
+            UI.lrcFontCurrent.style.fontFamily = safeFamily || '';
+        }
+    };
+
+    const applyLrcFont = (font, persist = true) => {
+        setLrcFontVisual(font);
+        if (persist) {
+            savedSettings.lrcFontName = font?.name || '默认字体';
+            savedSettings.lrcFontFamily = font?.family || '';
+            savedSettings.lrcFontCss = font?.css || '';
+            savedSettings.lrcFontId = font?.id || '';
+            savedSettings.lrcFontUrl = font?.pageUrl || '';
+            scheduleSettingsSave();
+        }
+    };
+
+    const getSavedLrcFont = () => {
+        if (savedSettings.lrcFontName === '默认字体' || !savedSettings.lrcFontFamily || !savedSettings.lrcFontCss) return null;
+        return {
+            id: savedSettings.lrcFontId || '', name: savedSettings.lrcFontName,
+            family: savedSettings.lrcFontFamily, css: savedSettings.lrcFontCss,
+            pageUrl: savedSettings.lrcFontUrl || ''
+        };
+    };
+
+    const resetLrcFontToDefault = () => {
+        try {
+            targetDoc.querySelectorAll('link[id^="fm-zeofont-"]').forEach(link => { try { link.remove(); } catch (_) {} });
+            targetDoc.querySelectorAll('link[id^="fm-zeofont-inspect-"]').forEach(link => { try { link.remove(); } catch (_) {} });
+        } catch (_) {}
+        loadedFontCss.clear();
+        loadingFontCss.clear();
+        savedSettings.lrcFontName = '默认字体';
+        savedSettings.lrcFontFamily = '';
+        savedSettings.lrcFontCss = '';
+        savedSettings.lrcFontId = '';
+        savedSettings.lrcFontUrl = '';
+        if (UI.lrcFontUrl) UI.lrcFontUrl.value = '';
+        applyLrcFont(null, true);
+        API.toast('已恢复默认字体');
+    };
+
+    const importZeoSevenFont = async () => {
+        const raw = UI.lrcFontUrl?.value.trim();
+        if (!raw) { API.toast('请先粘贴 ZeoSeven 字体网址'); return; }
+        const parsed = parseZeoSevenUrl(raw);
+        if (!parsed) {
+            API.toast('请输入 ZeoSeven 字体详情页网址，例如 https://fonts.zeoseven.com/items/217/');
+            return;
+        }
+        const btn = UI.lrcFontImport;
+        if (btn) { btn.disabled = true; btn.textContent = '加载中'; }
+        try {
+            const family = await loadZeoCssAndReadFamily(parsed.css, 7000);
+            if (!family) { API.toast('字体 CSS 已请求，但没有读取到 font-family；请检查该字体的 FontsAPI 是否可用'); return; }
+            const font = { id: parsed.id, name: family, family, css: parsed.css, pageUrl: parsed.pageUrl };
+            const ok = await ensureZeoFontLoaded(font);
+            if (!ok) { API.toast('字体加载失败，请检查网络后重试'); return; }
+            applyLrcFont(font, true);
+            if (UI.lrcFontUrl) UI.lrcFontUrl.value = parsed.pageUrl;
+            API.toast(`已导入并应用：${family}`);
+        } catch (err) {
+            console.warn('[ArV] ZeoSeven font import failed:', err);
+            API.toast('字体导入失败，请检查网址和网络连接');
+        } finally {
+            if (btn) { btn.disabled = false; btn.textContent = '导入'; }
+        }
+    };
+
     const applyDecoration = () => {
         const label = String(savedSettings.nowPlayingLabel || '').trim() || 'NOW PLAYING';
         if (UI.nowPlayingLabel) UI.nowPlayingLabel.textContent = label;
@@ -2421,6 +2662,7 @@
         UI.wrapper.style.setProperty('--fm-bg-brightness', `${savedSettings.bgBrightness}%`);
         UI.wrapper.style.setProperty('--fm-lrc-font', `${savedSettings.lrcFont}px`);
         UI.wrapper.style.setProperty('--fm-lrc-bottom', `${savedSettings.lrcBottom}px`);
+        setLrcFontVisual(getSavedLrcFont());
 
         // 修复：面板比例应用逻辑
         if (savedSettings.panelRatio === '3:4') {
@@ -2461,6 +2703,18 @@
     };
     updateLrcModeBtns();
     syncLyricsVisibility();
+
+    UI.lrcFontImport?.addEventListener('click', importZeoSevenFont);
+    UI.lrcFontUrl?.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') importZeoSevenFont();
+    });
+    UI.lrcFontReset?.addEventListener('click', resetLrcFontToDefault);
+    const savedLrcFont = getSavedLrcFont();
+    if (savedLrcFont) {
+        ensureZeoFontLoaded(savedLrcFont).then(ok => {
+            if (ok) setLrcFontVisual(savedLrcFont);
+        });
+    }
 
     UI.sizeSlider.oninput = (e) => {
         savedSettings.ballSize = e.target.value;
