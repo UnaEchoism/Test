@@ -371,23 +371,8 @@
     };
 
     // ================= UI 构建 =================
-    // 如果旧实例还挂着，先执行完整清理；仅 remove DOM 不会停止旧 audio / rAF / 事件。
-    try {
-        if (typeof targetWin.__apvPlayerCleanup === 'function') {
-            targetWin.__apvPlayerCleanup();
-        }
-    } catch (_) {}
     const oldContainer = targetDoc.getElementById(CONFIG.ID);
     if (oldContainer) oldContainer.remove();
-
-    // TauriTavern/WebView 与移动端 SillyTavern 对 fixed + Shadow DOM 的渲染路径不同。
-    // 兼容策略：TT 走懒挂载；普通 ST 保持原先歌词宿主常驻，避免移动端歌词在重挂载后丢失。
-    const IS_TAURI_TAVERN = !!(
-        targetWin.__TAURI__ ||
-        targetWin.__TAURI_INTERNALS__ ||
-        /tauri/i.test(String(targetWin.navigator?.userAgent || ''))
-    );
-    const USE_LAZY_LYRIC_HOST = IS_TAURI_TAVERN;
 
     const container = targetDoc.createElement('div');
     container.id = CONFIG.ID;
@@ -397,16 +382,15 @@
         position: fixed; top: 0; left: 0;
         width: 1px; height: 1px;
         overflow: visible; pointer-events: none; z-index: ${CONFIG.Z_INDEX};
-        /* 只做 style containment。不能用 strict/layout/paint：这个 1×1 宿主允许内部 fixed UI 溢出到视口。 */
-        contain: style;
     `;
-
-    // 懒挂载：播放器完全隐藏时，连这个 fixed 宿主都不留在 document.body。
+    // 主播放器宿主按需挂载：不打开播放器时，不让这个 Shadow DOM 参与 TT 页面渲染。
     const ensureContainerMounted = () => {
         if (!container.isConnected && targetDoc.body) targetDoc.body.appendChild(container);
     };
     const unmountContainerIfIdle = () => {
-        if (!STATE.isExpanded && savedSettings.showBall === false && container.isConnected) container.remove();
+        if (!STATE.isExpanded && savedSettings.showBall === false && container.isConnected) {
+            container.remove();
+        }
     };
 
     const shadow = container.attachShadow({ mode: 'open' });
@@ -1080,123 +1064,6 @@
         timeDuration: wrapper.querySelector('#fm-time-duration')
     };
 
-    // ================= 独立桌面歌词渲染层 =================
-    // 歌词独立于播放器 Shadow DOM，但宿主本身只占“歌词实际需要的那一小块”。
-    // 不使用 100vw / 100vh，避免为了隔离歌词而重新制造全屏绘制区域。
-    const oldLyricHost = targetDoc.getElementById('apv-lyrics-host');
-    if (oldLyricHost) oldLyricHost.remove();
-    const lyricHost = targetDoc.createElement('div');
-    lyricHost.id = 'apv-lyrics-host';
-    lyricHost.style.cssText = `
-        position: fixed;
-        left: 50%;
-        bottom: calc(var(--fm-lrc-bottom, 80px) + env(safe-area-inset-bottom, 0px));
-        width: max-content;
-        max-width: 80vw;
-        min-width: 60px;
-        height: max-content;
-        max-height: 40dvh;
-        transform: translateX(-50%);
-        overflow: visible;
-        pointer-events: none;
-        z-index: 2147483647;
-        contain: layout paint style;
-        isolation: isolate;
-        display: none;
-    `;
-    // TT 使用懒挂载；普通 ST 保持歌词宿主常驻，只切换 display。
-    // 这样可以避开 TT 的 fixed/Shadow DOM 重挂载问题，同时恢复移动端 ST 的歌词显示。
-    const ensureLyricHostMounted = () => {
-        if (!lyricHost.isConnected && targetDoc.body) targetDoc.body.appendChild(lyricHost);
-    };
-    const unmountLyricHost = () => {
-        if (lyricHost.isConnected) lyricHost.remove();
-    };
-    const shouldMountLyrics = () => STATE.isLyricsVisible && audio && !audio.paused;
-
-    if (!USE_LAZY_LYRIC_HOST && targetDoc.body) {
-        targetDoc.body.appendChild(lyricHost);
-    }
-
-    const lyricShadow = lyricHost.attachShadow({ mode: 'open' });
-    const lyricStyle = targetDoc.createElement('style');
-    lyricStyle.textContent = `
-        :host {
-            all: initial;
-            --fm-font: 'Segoe UI', -apple-system, BlinkMacSystemFont, Roboto, sans-serif;
-            --fm-lrc-font: 16px;
-            --fm-lrc-bottom: 80px;
-            --fm-lrc-family: var(--fm-font);
-            --fm-accent: #fff;
-            --fm-text-sub: rgba(255,255,255,.7);
-            --fm-shadow: rgba(0,0,0,.4);
-        }
-        .fm-out-lyrics, .fm-out-lyrics *,
-        .fm-out-lyrics-scroll, .fm-out-lyrics-scroll * {
-            font-family: var(--fm-lrc-family, var(--fm-font)) !important;
-            box-sizing: border-box;
-        }
-        .fm-out-lyrics {
-            position: relative;
-            width: max-content; max-width: 80vw; min-width: 60px;
-            min-height: 24px; max-height: 40dvh; height: auto;
-            overflow: hidden;
-            text-align: center; pointer-events: none;
-            display: flex; flex-direction: column; align-items: center; gap: 4px;
-            opacity: 0; transition: opacity .5s;
-        }
-        .fm-out-lyrics.show { opacity: 1; }
-        .fm-out-lyrics:not(.show), .fm-out-lyrics-scroll:not(.show) { display: none !important; }
-        .fm-lrc-line { font-size: var(--fm-lrc-font, 16px); font-weight: bold; color: var(--fm-accent); text-shadow: 0 2px 8px var(--fm-shadow), 0 0 2px rgba(0,0,0,.5); line-height: 1.4; }
-        .fm-lrc-plain-line { font-size: var(--fm-lrc-font, 16px); font-weight: bold; color: var(--fm-accent); line-height: 1.4; text-shadow: 0 2px 8px var(--fm-shadow), 0 0 2px rgba(0,0,0,.5); }
-        .fm-lrc-plain-trans { margin-top: 4px; }
-        .fm-lrc-trans { font-size: calc(var(--fm-lrc-font, 16px) * .75); color: var(--fm-text-sub); text-shadow: 0 1px 4px var(--fm-shadow); }
-        .lrc-anim-char { display: inline-block; opacity: 0; transform: translateY(4px); animation: lrc-in 1s cubic-bezier(.22,1,.36,1) forwards; }
-        @keyframes lrc-in { to { opacity: 1; transform: translateY(0); } }
-        .lrc-anim-fall { display:inline-block; opacity:0; transform:translateY(-40px); animation:lrc-fall-in .8s cubic-bezier(.22,1,.36,1) forwards; }
-        @keyframes lrc-fall-in { 0%{opacity:0;transform:translateY(-40px)} 100%{opacity:1;transform:translateY(0)} }
-        .lrc-trans-fade { opacity:0; animation:lrc-trans-fade-in .8s cubic-bezier(.22,1,.36,1) forwards; }
-        @keyframes lrc-trans-fade-in { 0%{opacity:0} 100%{opacity:1} }
-        @keyframes lrc-fade-out { 0%{opacity:1;transform:scale(1)} 100%{opacity:0;transform:scale(.95)} }
-        .lrc-highlight { color:#ff4d4f !important; text-shadow:0 0 8px rgba(255,77,79,.6),0 2px 4px rgba(0,0,0,.5) !important; }
-        .fm-out-lyrics-scroll {
-            position: relative;
-            width: max-content; max-width: 80vw; min-width: 60px;
-            height: calc(var(--fm-lrc-font, 16px) * 5.4);
-            max-height: 40dvh; overflow: hidden; box-sizing: border-box;
-            pointer-events: none;
-            opacity: 0; transition: opacity .5s;
-            -webkit-mask-image: linear-gradient(to bottom, transparent 0%, black 30%, black 70%, transparent 100%);
-            mask-image: linear-gradient(to bottom, transparent 0%, black 30%, black 70%, transparent 100%);
-        }
-        .fm-out-lyrics-scroll.show { opacity: 1; }
-        .fm-lrc-scroll-list { display:flex; flex-direction:column; align-items:center; transition:transform .45s cubic-bezier(.25,.8,.25,1); }
-        .fm-lrc-scroll-line { font-size:var(--fm-lrc-font,16px); line-height:1.8; color:var(--fm-text-sub); opacity:.35; text-align:center; text-shadow:0 2px 8px var(--fm-shadow); white-space:nowrap; padding:2px 10px; transition:opacity .4s,color .4s,font-size .4s; }
-        .fm-lrc-scroll-line.near { opacity:.6; }
-        .fm-lrc-scroll-line.current { color:var(--fm-accent); font-weight:bold; opacity:1; font-size:calc(var(--fm-lrc-font,16px) * 1.15); }
-    `;
-    lyricShadow.appendChild(lyricStyle);
-    const lyricOut = UI.outLyrics;
-    const lyricScroll = UI.outLyricsScroll;
-    const lyricScrollList = UI.outLyricsScrollList;
-    lyricShadow.appendChild(lyricOut);
-    lyricShadow.appendChild(lyricScroll);
-    UI.outLyrics = lyricOut;
-    UI.outLyricsScroll = lyricScroll;
-    UI.outLyricsScrollList = lyricScrollList;
-    UI.lyricHost = lyricHost;
-    UI.lyricShadow = lyricShadow;
-
-    const syncLyricHostVars = () => {
-        const names = ['--fm-font','--fm-lrc-font','--fm-lrc-bottom','--fm-lrc-family','--fm-bg','--fm-text-main','--fm-text-sub','--fm-accent','--fm-border','--fm-shadow'];
-        const cs = targetWin.getComputedStyle(UI.wrapper);
-        names.forEach((name) => {
-            const value = cs.getPropertyValue(name).trim();
-            if (value) lyricHost.style.setProperty(name, value);
-        });
-    };
-    syncLyricHostVars();
-
     // ================= 桌面歌词字体 =================
     // 只接受用户主动提供的 ZeoSeven 字体详情页 / FontsAPI URL。
     // 不抓取整个字体网站，也不维护庞大的在线字体目录，避免 WebView 卡顿。
@@ -1318,7 +1185,6 @@
         const family = font?.family || '';
         const safeFamily = family ? `"${family.replace(/"/g,'\\"')}"` : '';
         UI.wrapper.style.setProperty('--fm-lrc-family', safeFamily || 'var(--fm-font)');
-        if (UI.lyricHost) UI.lyricHost.style.setProperty('--fm-lrc-family', safeFamily || 'var(--fm-font)');
         const lyricRoots = [UI.outLyrics, UI.outLyricsScroll, UI.outLyricsScrollList].filter(Boolean);
         lyricRoots.forEach(root => {
             root.style.setProperty('font-family', safeFamily || 'var(--fm-font)', 'important');
@@ -1466,7 +1332,6 @@
 
     // 拖拽与面板定位
     function initDraggable() {
-        if (savedSettings.showBall !== false || STATE.isExpanded) ensureContainerMounted();
         let isDragging = false;
         let startX, startY, initialLeft, initialTop;
         let currentX, currentY;
@@ -1636,13 +1501,9 @@
             UI.panel.classList.remove('open');
             UI.panel.style.display = 'none';
             // 关闭后如果悬浮球也隐藏，则整个播放器宿主退出渲染树。
-            if (savedSettings.showBall === false) {
-                unmountContainerIfIdle();
-            } else {
-                ensureContainerMounted();
-                container.style.display = 'block';
-            }
+            container.style.display = savedSettings.showBall === false ? 'none' : 'block';
             STATE.uiNeedsRender = false;
+            unmountContainerIfIdle();
             UI.ball.innerHTML = '<i class="fas fa-music"></i>';
             if (STATE.isPlaying) UI.ball.classList.add('playing');
         }
@@ -2596,21 +2457,6 @@
         const inactive = (active === UI.outLyrics) ? UI.outLyricsScroll : UI.outLyrics;
         inactive.classList.remove('show');
         active.classList.toggle('show', STATE.isLyricsVisible);
-        if (lyricHost) {
-            if (USE_LAZY_LYRIC_HOST) {
-                if (shouldMountLyrics()) {
-                    ensureLyricHostMounted();
-                    lyricHost.style.display = 'block';
-                } else {
-                    lyricHost.style.display = 'none';
-                    unmountLyricHost();
-                }
-            } else {
-                // 普通 ST：宿主常驻，避免移动端 WebView 对 Shadow DOM 重挂载后不再绘制歌词。
-                ensureLyricHostMounted();
-                lyricHost.style.display = STATE.isLyricsVisible ? 'block' : 'none';
-            }
-        }
     }
 
     UI.lrcToggleBtn.onclick = () => {
@@ -2918,17 +2764,7 @@
         UI.ballVisibleToggle.checked = savedSettings.showBall !== false;
         UI.wrapper.classList.toggle('ball-hidden', savedSettings.showBall === false);
         // 隐藏悬浮球且播放器关闭时，连根宿主都从渲染树中拿掉。打开时再恢复。
-        if (!STATE.isExpanded) {
-            if (savedSettings.showBall === false) {
-                unmountContainerIfIdle();
-            } else {
-                ensureContainerMounted();
-                container.style.display = 'block';
-            }
-        } else {
-            ensureContainerMounted();
-            container.style.display = 'block';
-        }
+        if (!STATE.isExpanded) container.style.display = savedSettings.showBall === false ? 'none' : 'block';
         UI.wrapper.style.setProperty('--fm-custom-color', savedSettings.customColor);
         
         if (savedSettings.shapeStyle === 'square') {
@@ -2937,10 +2773,7 @@
             UI.wrapper.style.setProperty('--fm-radius-btn', '4px');
             UI.wrapper.style.setProperty('--fm-radius-input', '0px');
             UI.wrapper.style.setProperty('--fm-radius-thumb', '2px');
-            if (UI.shapeBtn.dataset.shapeState !== 'square') {
-                UI.shapeBtn.dataset.shapeState = 'square';
-                UI.shapeBtn.innerHTML = '<i class="fas fa-circle"></i>';
-            }
+            UI.shapeBtn.innerHTML = '<i class="fas fa-circle"></i>';
             UI.shapeBtn.title = "切换为圆润外观";
         } else {
             UI.wrapper.style.setProperty('--fm-radius-ball', '50%');
@@ -2948,10 +2781,7 @@
             UI.wrapper.style.setProperty('--fm-radius-btn', '50%');
             UI.wrapper.style.setProperty('--fm-radius-input', '8px');
             UI.wrapper.style.setProperty('--fm-radius-thumb', '50%');
-            if (UI.shapeBtn.dataset.shapeState !== 'round') {
-                UI.shapeBtn.dataset.shapeState = 'round';
-                UI.shapeBtn.innerHTML = '<i class="fas fa-square"></i>';
-            }
+            UI.shapeBtn.innerHTML = '<i class="fas fa-square"></i>';
             UI.shapeBtn.title = "切换为方正外观";
         }
         
@@ -2964,7 +2794,6 @@
         UI.wrapper.style.setProperty('--fm-bg-brightness', `${savedSettings.bgBrightness}%`);
         UI.wrapper.style.setProperty('--fm-lrc-font', `${savedSettings.lrcFont}px`);
         UI.wrapper.style.setProperty('--fm-lrc-bottom', `${savedSettings.lrcBottom}px`);
-        syncLyricHostVars();
         const savedLrcFont = getSavedLrcFont();
         if (savedLrcFont) {
             ensureZeoFontLoaded(savedLrcFont).then((ok) => {
@@ -2975,16 +2804,12 @@
         }
 
         // 修复：面板比例应用逻辑
-        const ratioState = savedSettings.panelRatio || 'default';
-        if (UI.ratioBtn.dataset.ratioState !== ratioState) {
-            UI.ratioBtn.dataset.ratioState = ratioState;
-            if (ratioState === '3:4') {
-                UI.ratioBtn.innerHTML = '<i class="fas fa-crop-alt"></i> 3:4';
-            } else if (ratioState === '9:16') {
-                UI.ratioBtn.innerHTML = '<i class="fas fa-crop-alt"></i> 9:16';
-            } else {
-                UI.ratioBtn.innerHTML = '<i class="fas fa-crop-alt"></i> 自适应';
-            }
+        if (savedSettings.panelRatio === '3:4') {
+            UI.ratioBtn.innerHTML = '<i class="fas fa-crop-alt"></i> 3:4';
+        } else if (savedSettings.panelRatio === '9:16') {
+            UI.ratioBtn.innerHTML = '<i class="fas fa-crop-alt"></i> 9:16';
+        } else {
+            UI.ratioBtn.innerHTML = '<i class="fas fa-crop-alt"></i> 自适应';
         }
 
         // 智能强调色应用逻辑：
@@ -3137,10 +2962,6 @@
         UI.ball.classList.add('playing');
         if (lrcRafId) cancelAnimationFrame(lrcRafId);
         stopLyricsTimer();
-        if (lyricHost) {
-            ensureLyricHostMounted();
-            lyricHost.style.display = STATE.isLyricsVisible ? 'block' : 'none';
-        }
         updateLyrics();
         scheduleLyricsUpdate();
     };
@@ -3150,10 +2971,6 @@
         UI.ball.classList.remove('playing');
         if (lrcRafId) cancelAnimationFrame(lrcRafId);
         stopLyricsTimer();
-        if (lyricHost) {
-            lyricHost.style.display = 'none';
-            if (USE_LAZY_LYRIC_HOST) unmountLyricHost();
-        }
     };
     audio.onended = () => {
         if (STATE.playMode === 'repeat_one') { audio.currentTime = 0; audio.play(); }
@@ -3235,12 +3052,13 @@
     
     targetWin._flowMusicToggle = () => {
         savedSettings.showBall = savedSettings.showBall === false;
+        if (savedSettings.showBall) ensureContainerMounted();
         applySettings();
+        if (!savedSettings.showBall) unmountContainerIfIdle();
     };
-    const playerToggleEvent = (typeof getButtonEvent === 'function') ? getButtonEvent('显隐播放器') : null;
 
-    if (typeof eventOn === 'function' && playerToggleEvent) {
-        eventOn(playerToggleEvent, targetWin._flowMusicToggle);
+    if (typeof eventOn === 'function' && typeof getButtonEvent === 'function') {
+        eventOn(getButtonEvent('显隐播放器'), targetWin._flowMusicToggle);
     }
 
     // SillyTavern 的输入框扩展菜单（扳手/魔法棒菜单）只需要放一个入口，
@@ -3275,16 +3093,8 @@
         try {
             const c = targetDoc.getElementById(CONFIG.ID);
             if (c) c.remove();
-            const oldLyrics = targetDoc.getElementById('apv-lyrics-host');
-            if (oldLyrics) oldLyrics.remove();
             const menuItem = targetDoc.getElementById('arv_terminal_wand_container');
             if (menuItem) menuItem.remove();
-        } catch (_) {}
-        try {
-            const off = targetWin.eventRemove || targetWin.eventOff || targetWin.eventRemoveListener;
-            if (typeof off === 'function' && playerToggleEvent && targetWin._flowMusicToggle) {
-                off(playerToggleEvent, targetWin._flowMusicToggle);
-            }
         } catch (_) {}
         try { delete targetWin._flowMusicToggle; } catch (_) {}
         if (targetWin.__apvPlayerCleanup === cleanupPlayerInstance) {
