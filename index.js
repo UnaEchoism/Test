@@ -20,7 +20,7 @@
     // ================= 核心配置 =================
     const CONFIG = {
         ID: 'st-flow-music-player-pro',
-        VERSION: '4.3.1',
+        VERSION: '4.3.2-test',
         Z_INDEX: 2147483640,
         SAFE_MARGIN: 20, // 增加安全边距，防止贴边太紧
         DEFAULT_THEME: 'adaptive',
@@ -695,12 +695,12 @@
         .fm-app-head { display:flex; align-items:center; justify-content:space-between; padding:14px 16px 10px; flex:0 0 auto; }
         .fm-brand { display:flex; align-items:center; min-width:0; }
         .fm-app-name { font-size:15px; font-weight:700; color:var(--fm-text-main); }
-        .fm-app-sub { margin-top:2px; font-size:9px; letter-spacing:.16em; color:var(--fm-text-sub); }
         .fm-pages { flex:1 1 auto; min-height:0; overflow:hidden; position:relative; }
         .fm-page { display:none; height:100%; min-height:0; overflow-y:auto; overflow-x:hidden; padding:8px 16px 18px; box-sizing:border-box; scrollbar-width:none; -ms-overflow-style:none; }
         .fm-page::-webkit-scrollbar { width:0; height:0; display:none; }
         .fm-page.active { display:flex; flex-direction:column; gap:12px; }
         .fm-page.active > * { flex-shrink: 0; }
+        .fm-player-credit { padding: 6px 0 2px; text-align: center; font-size: 9px; letter-spacing: .08em; color: var(--fm-text-sub); opacity: .78; }
         .fm-section-kicker { font-size:9px; letter-spacing:.18em; color:var(--fm-accent); font-weight:800; margin-bottom:3px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
         .fm-page-title { display:flex; align-items:center; justify-content:space-between; padding:4px 2px 2px; }
         .fm-page-title h2 { margin:0; font-size:24px; line-height:1.1; color:var(--fm-text-main); }
@@ -782,7 +782,6 @@
                 <div class="fm-brand">
                     <div class="fm-brand-text">
                         <div class="fm-app-name">ᴀᴘᴠ ᴘʟᴀʏᴇʀ</div>
-                        <div class="fm-app-sub">MUSIC PLAYER</div>
                     </div>
                 </div>
                 <button class="fm-close-btn" id="fm-close"><i class="fas fa-times"></i></button>
@@ -838,6 +837,8 @@
                             <div class="fm-playlist" id="fm-playlist"></div>
                         </div>
                     </section>
+
+                    <div class="fm-player-credit">@Una—ᴀᴘᴠ ᴘʟᴀʏᴇʀ</div>
                 </section>
 
                 <!-- 外观设置 -->
