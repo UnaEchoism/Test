@@ -20,6 +20,7 @@
     // ================= 核心配置 =================
     const CONFIG = {
         ID: 'st-flow-music-player-pro',
+        VERSION: '4.3.1',
         Z_INDEX: 2147483640,
         SAFE_MARGIN: 20, // 增加安全边距，防止贴边太紧
         DEFAULT_THEME: 'adaptive',
@@ -243,9 +244,9 @@
         toast(msg) {
             if (typeof triggerSlash === 'function') {
                 const safeMsg = msg.replace(/(\\+)?([|{}])/g, (m, s, c) => (s || '') + (s || '') + '\\' + c);
-                triggerSlash(`/echo severity=info [播放器测试] ${safeMsg}`);
+                triggerSlash(`/echo severity=info [ᴀᴘᴠ ᴘʟᴀʏᴇʀ] ${safeMsg}`);
             } else {
-                console.log(`[播放器测试] ${msg}`);
+                console.log(`[ᴀᴘᴠ ᴘʟᴀʏᴇʀ] ${msg}`);
             }
         },
         _extractArray(data) {
@@ -517,6 +518,9 @@
         .fm-item-title { color: var(--fm-text-main); font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
         .fm-item-artist { color: var(--fm-text-sub); font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
         
+        .fm-list-tools { display: inline-flex; align-items: center; gap: 8px; }
+        .fm-sort-list-btn { border: 0; background: transparent; color: var(--fm-text-sub); font-size: 11px; padding: 3px 4px; cursor: pointer; }
+        .fm-sort-list-btn:hover { color: var(--fm-text-main); }
         .fm-item-actions { display: flex; align-items: center; gap: 4px; flex-shrink: 0; }
         .fm-icon-btn { color: var(--fm-text-sub); background: none; border: none; cursor: pointer; padding: 4px; opacity: 0; transition: all 0.2s; font-size: 14px; }
         .fm-item:hover .fm-icon-btn { opacity: 1; }
@@ -777,7 +781,7 @@
             <div class="fm-app-head">
                 <div class="fm-brand">
                     <div class="fm-brand-text">
-                        <div class="fm-app-name">播放器测试</div>
+                        <div class="fm-app-name">ᴀᴘᴠ ᴘʟᴀʏᴇʀ</div>
                         <div class="fm-app-sub">MUSIC PLAYER</div>
                     </div>
                 </div>
@@ -793,7 +797,7 @@
                         </div>
                         <div class="fm-now-meta">
                             <div class="fm-section-kicker" id="fm-now-playing-label">NOW PLAYING</div>
-                            <div class="fm-title" id="fm-title">播放器测试</div>
+                            <div class="fm-title" id="fm-title">ᴀᴘᴠ ᴘʟᴀʏᴇʀ</div>
                             <div class="fm-artist" id="fm-artist">Awaiting Connection...</div>
                         </div>
                     </div>
@@ -1599,7 +1603,7 @@
                     if (sourceList.tracks.length > 0) playTrack(sourceIndex % sourceList.tracks.length, sourcePlaylistId);
                     else {
                         STATE.currentIndex = -1;
-                        UI.title.textContent = '播放器测试';
+                        UI.title.textContent = 'ᴀᴘᴠ ᴘʟᴀʏᴇʀ';
                         UI.artist.textContent = 'Awaiting Connection...';
                         UI.outLyrics.innerHTML = '';
                     }
@@ -1683,7 +1687,12 @@
                     renderListUI();
                 };
             } else {
-                header.innerHTML = `<span>${currentListObj.name} (${currentTracks.length})</span><span class="fm-clear-list">清空列表</span>`;
+                header.innerHTML = `<span>${currentListObj.name} (${currentTracks.length})</span><span class="fm-list-tools"><button type="button" class="fm-sort-list-btn" title="排序歌曲"><i class="fas fa-sort-alpha-down"></i> 排序</button><span class="fm-clear-list">清空列表</span></span>`;
+                header.querySelector('.fm-sort-list-btn').onclick = (e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    showTrackSortMenu(e, currentListObj);
+                };
                 header.querySelector('.fm-clear-list').onclick = () => {
                     if (confirm(`确定清空 [${currentListObj.name}] 吗？`)) {
                         currentListObj.tracks = [];
@@ -1691,7 +1700,7 @@
                         if (STATE.playingPlaylistId === currentListObj.id) {
                             audio.pause();
                             STATE.currentIndex = -1;
-                            UI.title.textContent = '播放器测试';
+                            UI.title.textContent = 'ᴀᴘᴠ ᴘʟᴀʏᴇʀ';
                             UI.artist.textContent = 'Awaiting Connection...';
                             UI.outLyrics.innerHTML = '';
                         }
@@ -1718,7 +1727,7 @@
                     </div>
                     <div class="fm-item-actions">
                         <button class="fm-icon-btn move" title="移动至其他歌单"><i class="fas fa-exchange-alt"></i></button>
-                        <button class="fm-icon-btn pinned ${index === 0 ? 'pinned' : ''}" title="置顶"><i class="fas fa-thumbtack"></i></button>
+                        <button class="fm-icon-btn reorder" title="调整顺序"><i class="fas fa-arrows-alt-v"></i></button>
                         <button class="fm-icon-btn del" title="移除"><i class="fas fa-trash-alt"></i></button>
                     </div>
                 `;
@@ -1726,8 +1735,8 @@
                 item.addEventListener('click', (e) => {
                     if (e.target.closest('.del')) {
                         e.stopPropagation(); removeTrack(index, currentListObj.id);
-                    } else if (e.target.closest('.pinned')) {
-                        e.stopPropagation(); pinTrack(index, currentListObj.id);
+                    } else if (e.target.closest('.reorder')) {
+                        e.stopPropagation(); showTrackReorderMenu(e, track, index, currentListObj.id);
                     } else if (e.target.closest('.move')) {
                         e.stopPropagation(); showAddMenu(e, track, 'move', index, currentListObj.id);
                     } else {
@@ -1737,6 +1746,123 @@
                 UI.playlistEl.appendChild(item);
             });
         }
+    }
+
+    function getTrackSortValue(track, field) {
+        const value = field === 'artist' ? track.artist : track.title;
+        return String(value || '').trim().toLocaleLowerCase();
+    }
+
+    function updatePlayingIndexAfterReorder(playlistId, currentTrack) {
+        if (STATE.playingPlaylistId !== playlistId || !currentTrack) return;
+        const list = STATE.playlists.find(p => p.id === playlistId);
+        if (!list) return;
+        const nextIndex = list.tracks.indexOf(currentTrack);
+        STATE.currentIndex = nextIndex;
+    }
+
+    function reorderTrack(index, playlistId, direction) {
+        const list = STATE.playlists.find(p => p.id === playlistId);
+        if (!list || index < 0 || index >= list.tracks.length) return;
+        const nextIndex = direction === 'up' ? index - 1 : index + 1;
+        if (nextIndex < 0 || nextIndex >= list.tracks.length) return;
+        const currentTrack = STATE.playingPlaylistId === playlistId ? list.tracks[STATE.currentIndex] : null;
+        [list.tracks[index], list.tracks[nextIndex]] = [list.tracks[nextIndex], list.tracks[index]];
+        updatePlayingIndexAfterReorder(playlistId, currentTrack);
+        savePlaylist();
+        renderListUI();
+    }
+
+    function moveTrackToEdge(index, playlistId, toTop) {
+        const list = STATE.playlists.find(p => p.id === playlistId);
+        if (!list || index < 0 || index >= list.tracks.length) return;
+        const currentTrack = STATE.playingPlaylistId === playlistId ? list.tracks[STATE.currentIndex] : null;
+        const [track] = list.tracks.splice(index, 1);
+        if (toTop) list.tracks.unshift(track);
+        else list.tracks.push(track);
+        updatePlayingIndexAfterReorder(playlistId, currentTrack);
+        savePlaylist();
+        renderListUI();
+    }
+
+    function showTrackReorderMenu(e, track, index, playlistId) {
+        e.stopPropagation();
+        UI.popMenu.innerHTML = '';
+        const list = STATE.playlists.find(p => p.id === playlistId);
+        if (!list) return;
+        const items = [
+            ['fas fa-arrow-up', '上移一位', () => reorderTrack(index, playlistId, 'up')],
+            ['fas fa-arrow-down', '下移一位', () => reorderTrack(index, playlistId, 'down')],
+            ['fas fa-angle-double-up', '置顶', () => moveTrackToEdge(index, playlistId, true)],
+            ['fas fa-angle-double-down', '置底', () => moveTrackToEdge(index, playlistId, false)]
+        ];
+        items.forEach(([icon, label, action], i) => {
+            const item = targetDoc.createElement('div');
+            item.className = 'fm-pop-item';
+            item.innerHTML = `<i class="${icon}"></i><span>${label}</span>`;
+            if ((i === 0 && index === 0) || (i === 1 && index === list.tracks.length - 1)) {
+                item.style.opacity = '.45';
+                item.style.pointerEvents = 'none';
+            }
+            item.onclick = () => { UI.popMenu.classList.remove('show'); action(); };
+            UI.popMenu.appendChild(item);
+        });
+        const rect = e.currentTarget?.getBoundingClientRect?.() || e.target.getBoundingClientRect();
+        const menuWidth = 130;
+        const menuHeight = items.length * 34 + 10;
+        let top = rect.bottom + 4;
+        if (top + menuHeight > targetWin.innerHeight - 10) top = rect.top - menuHeight - 4;
+        let left = rect.right - menuWidth;
+        left = Math.max(10, Math.min(left, targetWin.innerWidth - menuWidth - 10));
+        top = Math.max(10, Math.min(top, targetWin.innerHeight - menuHeight - 10));
+        UI.popMenu.style.top = `${top}px`;
+        UI.popMenu.style.left = `${left}px`;
+        UI.popMenu.classList.add('show');
+    }
+
+    function showTrackSortMenu(e, playlist) {
+        e.stopPropagation();
+        if (!playlist || playlist.tracks.length < 2) { API.toast('歌单里至少需要两首歌曲才能排序'); return; }
+        UI.popMenu.innerHTML = '';
+        const currentPlayingTrack = STATE.playingPlaylistId === playlist.id ? playlist.tracks[STATE.currentIndex] : null;
+        const options = [
+            ['fas fa-sort-alpha-down', '歌曲名 A → Z', ['title', 1]],
+            ['fas fa-sort-alpha-up', '歌曲名 Z → A', ['title', -1]],
+            ['fas fa-sort-alpha-down', '歌手 A → Z', ['artist', 1]],
+            ['fas fa-sort-alpha-up', '歌手 Z → A', ['artist', -1]]
+        ];
+        options.forEach(([icon, label, sortSpec], i) => {
+            const item = targetDoc.createElement('div');
+            item.className = 'fm-pop-item';
+            item.innerHTML = `<i class="${icon}"></i><span>${label}</span>`;
+            item.onclick = () => {
+                UI.popMenu.classList.remove('show');
+                if (!sortSpec) return;
+                const [field, direction] = sortSpec;
+                playlist.tracks.sort((a, b) => {
+                    const av = getTrackSortValue(a, field);
+                    const bv = getTrackSortValue(b, field);
+                    const result = av.localeCompare(bv, undefined, { numeric: true, sensitivity: 'base' });
+                    return result * direction;
+                });
+                updatePlayingIndexAfterReorder(playlist.id, currentPlayingTrack);
+                savePlaylist();
+                renderListUI();
+                API.toast(`已按${field === 'artist' ? '歌手' : '歌曲名'}排序`);
+            };
+            UI.popMenu.appendChild(item);
+        });
+        const rect = e.currentTarget?.getBoundingClientRect?.() || e.target.getBoundingClientRect();
+        const menuWidth = 160;
+        const menuHeight = options.length * 34 + 10;
+        let top = rect.bottom + 4;
+        if (top + menuHeight > targetWin.innerHeight - 10) top = rect.top - menuHeight - 4;
+        let left = rect.right - menuWidth;
+        left = Math.max(10, Math.min(left, targetWin.innerWidth - menuWidth - 10));
+        top = Math.max(10, Math.min(top, targetWin.innerHeight - menuHeight - 10));
+        UI.popMenu.style.top = `${top}px`;
+        UI.popMenu.style.left = `${left}px`;
+        UI.popMenu.classList.add('show');
     }
 
     function pinTrack(index, playlistId) {
@@ -1766,7 +1892,7 @@
                 if (targetList.tracks.length > 0) playTrack(index % targetList.tracks.length, playlistId);
                 else {
                     STATE.currentIndex = -1;
-                    UI.title.textContent = '播放器测试';
+                    UI.title.textContent = 'ᴀᴘᴠ ᴘʟᴀʏᴇʀ';
                     UI.artist.textContent = 'Awaiting Connection...';
                     UI.outLyrics.innerHTML = '';
                 }
@@ -2957,8 +3083,8 @@
         const item = doc.createElement('div');
         item.id = 'arvTerminalExtensionMenuItem';
         item.className = 'list-group-item flex-container flexGap5';
-        item.title = '打开 播放器测试 音乐播放器';
-        item.innerHTML = '<div class="fa-fw fa-solid fa-music extensionsMenuExtensionButton"></div><span>播放器测试</span>';
+        item.title = '打开 ᴀᴘᴠ ᴘʟᴀʏᴇʀ 音乐播放器';
+        item.innerHTML = '<div class="fa-fw fa-solid fa-music extensionsMenuExtensionButton"></div><span>ᴀᴘᴠ ᴘʟᴀʏᴇʀ</span>';
 
         item.addEventListener('click', (event) => {
             event.preventDefault();
