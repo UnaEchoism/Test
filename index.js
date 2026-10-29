@@ -20,7 +20,7 @@
     // ================= 核心配置 =================
     const CONFIG = {
         ID: 'st-flow-music-player-pro',
-        VERSION: '4.3.2-test-backup2',
+        VERSION: '4.3.2-test-backup4',
         Z_INDEX: 2147483640,
         SAFE_MARGIN: 20, // 增加安全边距，防止贴边太紧
         DEFAULT_THEME: 'adaptive',
@@ -2419,24 +2419,34 @@
         renderListUI();
     };
 
+    // 搜索/导入按钮：每次点击都直接读取下拉框当前值，避免 STATE 与实际 UI 不同步。
+    // 所有分支统一 finally 复位按钮，且搜索状态立即显示在按钮上。
+    UI.addBtn.type = 'button';
     UI.addBtn.onclick = async () => {
-        const val = UI.input.value.trim();
-        if (!val && STATE.currentInputMode !== 'search_local') return;
-        
-        const originalText = UI.addBtn.textContent;
-        UI.addBtn.textContent = '...';
-        UI.addBtn.disabled = true;
-
-        if (STATE.currentInputMode === 'search_local') {
-            STATE.localSearchKeyword = val.toLowerCase();
-            renderListUI();
-            UI.addBtn.textContent = originalText;
-            UI.addBtn.disabled = false;
+        const mode = String(UI.sourceSelect?.value || STATE.currentInputMode || 'netease');
+        STATE.currentInputMode = mode;
+        const val = String(UI.input?.value || '').trim();
+        if (!val && mode !== 'search_local') {
+            API.toast(mode === 'search' ? '请先输入歌曲名或歌手名' : '请先输入歌单 ID 或链接');
+            UI.input?.focus();
             return;
         }
 
-        if (STATE.currentInputMode === 'search') {
-            try {
+        const originalText = mode === 'search' ? '搜索' : (mode === 'search_local' ? '查找' : '导入');
+        UI.addBtn.disabled = true;
+        UI.addBtn.textContent = mode === 'search' ? '搜索中…' : '处理中…';
+        UI.addBtn.setAttribute('aria-busy', 'true');
+
+        try {
+            if (mode === 'search_local') {
+                STATE.localSearchKeyword = val.toLowerCase();
+                renderListUI();
+                return;
+            }
+
+            if (mode === 'search') {
+                // 先给出可见反馈，避免网络等待期间看起来像按钮没有响应。
+                API.toast(`正在搜索：${val}`);
                 const results = await API.searchTrack(val);
                 if (results.length > 0) {
                     STATE.searchResults = results;
@@ -2444,66 +2454,54 @@
                     renderListUI();
                     API.toast(`搜索到 ${results.length} 首相关歌曲`);
                 } else {
-                    API.toast("没有搜到结果。可换关键词后重试。");
+                    API.toast('没有搜到结果。请换关键词后重试。');
                 }
-            } catch (e) {
-                console.error('[ApV] 单曲搜索失败：', e);
-                API.toast(`搜索失败：${e?.message || '网络请求异常'}。请稍后重试。`);
-            } finally {
-                UI.addBtn.textContent = originalText;
-                UI.addBtn.disabled = false;
+                return;
             }
-            return;
-        } else {
-            const tracks = await API.parsePlaylist(val, STATE.currentInputMode);
-            if (tracks.length > 0) {
-                const currentListObj = getCurrentPlaylist();
-                
-                // 防卡死：导入时检查容量
-                if (currentListObj.tracks.length >= CONFIG.MAX_TRACKS_PER_LIST) {
-                    API.toast(`歌单已达到上限 (${CONFIG.MAX_TRACKS_PER_LIST}首)，无法继续导入`);
-                    UI.addBtn.textContent = originalText;
-                    UI.addBtn.disabled = false;
-                    return;
-                }
 
-                const existingKeys = new Set(currentListObj.tracks.map(trackDedupeKey));
-                let newTracks = tracks.filter(t => !existingKeys.has(trackDedupeKey(t)));
-                const dupeCount = tracks.length - newTracks.length;
-                
-                // 截断超出的部分
-                let limitCount = 0;
-                if (currentListObj.tracks.length + newTracks.length > CONFIG.MAX_TRACKS_PER_LIST) {
-                    const allowed = CONFIG.MAX_TRACKS_PER_LIST - currentListObj.tracks.length;
-                    limitCount = newTracks.length - allowed;
-                    newTracks = newTracks.slice(0, allowed);
-                }
-
-                currentListObj.tracks.push(...newTracks);
-                savePlaylist();
-                STATE.isShowingSearch = false;
-                renderListUI();
-                UI.input.value = '';
-                
-                let msg = `成功导入 ${newTracks.length} 首歌曲至 [${currentListObj.name}]`;
-                if (dupeCount > 0) msg += `（跳过 ${dupeCount} 首重复）`;
-                if (limitCount > 0) msg += `（因容量限制，截断了 ${limitCount} 首）`;
-                API.toast(msg);
-                
-                if (STATE.currentIndex === -1 && STATE.playingPlaylistId === currentListObj.id) {
-                    playTrack(0, currentListObj.id);
-                }
-            } else {
-                API.toast("歌单解析失败或为空，请检查ID权限");
+            const tracks = await API.parsePlaylist(val, mode);
+            if (!tracks.length) {
+                API.toast('歌单解析失败或为空，请检查 ID、链接或网络连接');
+                return;
             }
+            const currentListObj = getCurrentPlaylist();
+            if (currentListObj.tracks.length >= CONFIG.MAX_TRACKS_PER_LIST) {
+                API.toast(`歌单已达到上限 (${CONFIG.MAX_TRACKS_PER_LIST}首)，无法继续导入`);
+                return;
+            }
+            const existingKeys = new Set(currentListObj.tracks.map(trackDedupeKey));
+            let newTracks = tracks.filter(t => !existingKeys.has(trackDedupeKey(t)));
+            const dupeCount = tracks.length - newTracks.length;
+            let limitCount = 0;
+            if (currentListObj.tracks.length + newTracks.length > CONFIG.MAX_TRACKS_PER_LIST) {
+                const allowed = CONFIG.MAX_TRACKS_PER_LIST - currentListObj.tracks.length;
+                limitCount = newTracks.length - allowed;
+                newTracks = newTracks.slice(0, allowed);
+            }
+            currentListObj.tracks.push(...newTracks);
+            savePlaylist();
+            STATE.isShowingSearch = false;
+            renderListUI();
+            UI.input.value = '';
+            let msg = `成功导入 ${newTracks.length} 首歌曲至 [${currentListObj.name}]`;
+            if (dupeCount > 0) msg += `（跳过 ${dupeCount} 首重复）`;
+            if (limitCount > 0) msg += `（因容量限制，截断了 ${limitCount} 首）`;
+            API.toast(msg);
+            if (STATE.currentIndex === -1 && STATE.playingPlaylistId === currentListObj.id && newTracks.length) {
+                playTrack(0, currentListObj.id);
+            }
+        } catch (e) {
+            console.error('[ApV] 搜索/导入操作失败：', e);
+            API.toast(`${mode === 'search' ? '搜索' : '操作'}失败：${e?.message || '未知错误'}`);
+        } finally {
+            UI.addBtn.textContent = originalText;
+            UI.addBtn.disabled = false;
+            UI.addBtn.removeAttribute('aria-busy');
         }
-        
-        UI.addBtn.textContent = originalText;
-        UI.addBtn.disabled = false;
     };
 
-    UI.input.onkeypress = (e) => {
-        if (e.key === 'Enter') UI.addBtn.click();
+    UI.input.onkeydown = (e) => {
+        if (e.key === 'Enter') { e.preventDefault(); UI.addBtn.click(); }
     };
     UI.input.oninput = () => {
         if (STATE.currentInputMode === 'search_local') {
