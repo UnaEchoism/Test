@@ -20,7 +20,7 @@
     // ================= 核心配置 =================
     const CONFIG = {
         ID: 'st-flow-music-player-pro',
-        VERSION: '4.3.2-test-backup4',
+        VERSION: '4.3.2-test-playlist-restored',
         Z_INDEX: 2147483640,
         SAFE_MARGIN: 20, // 增加安全边距，防止贴边太紧
         DEFAULT_THEME: 'adaptive',
@@ -274,34 +274,13 @@
             };
         },
         async _fetchJson(rawUrl, isUsable = data => data != null) {
-            // 所有网络请求都设置超时，避免 Android WebView 中接口无响应时永久挂起。
-            const requestJson = async (url, timeoutMs = 4000) => {
-                const controller = typeof AbortController !== 'undefined' ? new AbortController() : null;
-                const timer = controller ? setTimeout(() => controller.abort(), timeoutMs) : null;
-                try {
-                    const res = await fetch(url, controller ? { signal: controller.signal, cache: 'no-store' } : { cache: 'no-store' });
-                    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-                    return await res.json();
-                } finally {
-                    if (timer) clearTimeout(timer);
-                }
-            };
-            let firstError = null;
             try {
-                const data = await requestJson(rawUrl);
+                const res = await fetch(rawUrl);
+                const data = await res.json();
                 if (isUsable(data)) return data;
-                firstError = new Error('接口返回了空数据或无法识别的数据');
-            } catch (e) { firstError = e; }
-            // 代理仅作为一次备用尝试，同样有超时；不再无限等待。
-            try {
-                const data = await requestJson(`https://corsproxy.io/?${encodeURIComponent(rawUrl)}`, 4000);
-                if (isUsable(data)) return data;
-                throw new Error('代理接口返回了空数据或无法识别的数据');
-            } catch (e) {
-                const err = new Error(`音乐接口请求失败：${e?.name === 'AbortError' ? '请求超时' : (e?.message || '网络错误')}`);
-                err.cause = firstError;
-                throw err;
-            }
+            } catch (e) {}
+            const res = await fetch(`https://corsproxy.io/?${encodeURIComponent(rawUrl)}`);
+            return await res.json();
         },
         async parsePlaylist(inputVal, source) {
             try {
@@ -315,45 +294,20 @@
             }
         },
         async searchTrack(keyword) {
-            const query = String(keyword || '').trim();
-            if (!query) return [];
-            const safeKeyword = encodeURIComponent(query);
-            // 先尝试主要音源，只有未得到结果时才尝试官方文档列出的常见备用源。
-            // 每个请求由 _fetchJson 提供超时，避免多次点击后积累大量悬挂请求。
-            const sources = ['netease', 'joox'];
-            let lastError = null;
-            for (const source of sources) {
-                const rawUrl = `https://music-api.gdstudio.xyz/api.php?types=search&source=${source}&name=${safeKeyword}&count=15&pages=1`;
-                try {
-                    const data = await this._fetchJson(rawUrl, value => {
-                        const rows = this._extractArray(value);
-                        return rows.length > 0 && rows.some(t => t && (t.id || t.track_id || t.songId) && (t.name || t.title || t.songName));
-                    });
-                    const rows = this._extractArray(data);
-                    const results = rows.filter(t => t && (t.id || t.track_id || t.songId) && (t.name || t.title || t.songName)).map(t => {
-                        const id = String(t.id || t.track_id || t.songId || '');
-                        const artistValue = t.artist ?? t.author ?? t.singer ?? t.ar ?? '';
-                        const artist = Array.isArray(artistValue)
-                            ? artistValue.map(a => typeof a === 'string' ? a : (a?.name || '')).filter(Boolean).join('/')
-                            : (typeof artistValue === 'object' && artistValue !== null ? String(artistValue.name || '') : String(artistValue || ''));
-                        return {
-                            title: String(t.name || t.title || t.songName || '未知歌曲'),
-                            artist: artist || '未知歌手',
-                            id,
-                            rawId: id,
-                            lyricId: String(t.lyric_id || t.lyricId || id),
-                            source: t.source || source,
-                            pic: t.pic || t.cover || (t.pic_id ? `https://music-api.gdstudio.xyz/api.php?types=pic&source=${source}&id=${encodeURIComponent(t.pic_id)}&size=300` : null)
-                        };
-                    });
-                    if (results.length) return results;
-                } catch (e) {
-                    lastError = e;
-                    console.warn(`[ApV] ${source} 单曲搜索失败：`, e);
-                }
+            const safeKeyword = encodeURIComponent(keyword.trim());
+            const rawUrl = `https://music-api.gdstudio.xyz/api.php?types=search&source=netease&name=${safeKeyword}&count=15&pages=1`;
+            try {
+                const data = await this._fetchJson(rawUrl, data => Array.isArray(data) && data.length > 0);
+                return Array.isArray(data) ? data.map(t => ({
+                    title: t.name,
+                    artist: Array.isArray(t.artist) ? t.artist.join('/') : t.artist,
+                    id: t.id,
+                    lyricId: t.lyric_id || t.id,
+                    source: t.source || 'netease'
+                })) : [];
+            } catch (e) {
+                return [];
             }
-            if (lastError) throw lastError;
-            return [];
         },
         async fillTrackInfo(title, artist) {
             const keyword = encodeURIComponent(`${title} ${artist}`.trim());
@@ -1986,10 +1940,8 @@
 
         if (!track.url) {
             UI.title.textContent = "解析音源中...";
-            // 搜索结果/导入歌单若已带曲目 ID，优先使用原音源，避免备用音源的歌曲被重新匹配成网易云的同名曲目。
-            let searchRes = (track.rawId || track.id)
-                ? { id: track.rawId || track.id, source: track.source || 'netease', lyric_id: track.lyricId || track.lyric_id }
-                : await API.fillTrackInfo(track.title, track.artist);
+            let searchRes = await API.fillTrackInfo(track.title, track.artist);
+            if (!searchRes && track.rawId) searchRes = { id: track.rawId, source: track.source || 'netease' };
             
             if (searchRes) {
                 track.source = searchRes.source || track.source;
@@ -2419,89 +2371,82 @@
         renderListUI();
     };
 
-    // 搜索/导入按钮：每次点击都直接读取下拉框当前值，避免 STATE 与实际 UI 不同步。
-    // 所有分支统一 finally 复位按钮，且搜索状态立即显示在按钮上。
-    UI.addBtn.type = 'button';
     UI.addBtn.onclick = async () => {
-        const mode = String(UI.sourceSelect?.value || STATE.currentInputMode || 'netease');
-        STATE.currentInputMode = mode;
-        const val = String(UI.input?.value || '').trim();
-        if (!val && mode !== 'search_local') {
-            API.toast(mode === 'search' ? '请先输入歌曲名或歌手名' : '请先输入歌单 ID 或链接');
-            UI.input?.focus();
+        const val = UI.input.value.trim();
+        if (!val && STATE.currentInputMode !== 'search_local') return;
+        
+        const originalText = UI.addBtn.textContent;
+        UI.addBtn.textContent = '...';
+        UI.addBtn.disabled = true;
+
+        if (STATE.currentInputMode === 'search_local') {
+            STATE.localSearchKeyword = val.toLowerCase();
+            renderListUI();
+            UI.addBtn.textContent = originalText;
+            UI.addBtn.disabled = false;
             return;
         }
 
-        const originalText = mode === 'search' ? '搜索' : (mode === 'search_local' ? '查找' : '导入');
-        UI.addBtn.disabled = true;
-        UI.addBtn.textContent = mode === 'search' ? '搜索中…' : '处理中…';
-        UI.addBtn.setAttribute('aria-busy', 'true');
-
-        try {
-            if (mode === 'search_local') {
-                STATE.localSearchKeyword = val.toLowerCase();
+        if (STATE.currentInputMode === 'search') {
+            const results = await API.searchTrack(val);
+            if (results.length > 0) {
+                STATE.searchResults = results;
+                STATE.isShowingSearch = true;
                 renderListUI();
-                return;
+                API.toast(`搜索到 ${results.length} 首相关歌曲`);
+            } else {
+                API.toast("未搜索到结果，请换个关键词");
             }
-
-            if (mode === 'search') {
-                // 先给出可见反馈，避免网络等待期间看起来像按钮没有响应。
-                API.toast(`正在搜索：${val}`);
-                const results = await API.searchTrack(val);
-                if (results.length > 0) {
-                    STATE.searchResults = results;
-                    STATE.isShowingSearch = true;
-                    renderListUI();
-                    API.toast(`搜索到 ${results.length} 首相关歌曲`);
-                } else {
-                    API.toast('没有搜到结果。请换关键词后重试。');
+        } else {
+            const tracks = await API.parsePlaylist(val, STATE.currentInputMode);
+            if (tracks.length > 0) {
+                const currentListObj = getCurrentPlaylist();
+                
+                // 防卡死：导入时检查容量
+                if (currentListObj.tracks.length >= CONFIG.MAX_TRACKS_PER_LIST) {
+                    API.toast(`歌单已达到上限 (${CONFIG.MAX_TRACKS_PER_LIST}首)，无法继续导入`);
+                    UI.addBtn.textContent = originalText;
+                    UI.addBtn.disabled = false;
+                    return;
                 }
-                return;
-            }
 
-            const tracks = await API.parsePlaylist(val, mode);
-            if (!tracks.length) {
-                API.toast('歌单解析失败或为空，请检查 ID、链接或网络连接');
-                return;
+                const existingKeys = new Set(currentListObj.tracks.map(trackDedupeKey));
+                let newTracks = tracks.filter(t => !existingKeys.has(trackDedupeKey(t)));
+                const dupeCount = tracks.length - newTracks.length;
+                
+                // 截断超出的部分
+                let limitCount = 0;
+                if (currentListObj.tracks.length + newTracks.length > CONFIG.MAX_TRACKS_PER_LIST) {
+                    const allowed = CONFIG.MAX_TRACKS_PER_LIST - currentListObj.tracks.length;
+                    limitCount = newTracks.length - allowed;
+                    newTracks = newTracks.slice(0, allowed);
+                }
+
+                currentListObj.tracks.push(...newTracks);
+                savePlaylist();
+                STATE.isShowingSearch = false;
+                renderListUI();
+                UI.input.value = '';
+                
+                let msg = `成功导入 ${newTracks.length} 首歌曲至 [${currentListObj.name}]`;
+                if (dupeCount > 0) msg += `（跳过 ${dupeCount} 首重复）`;
+                if (limitCount > 0) msg += `（因容量限制，截断了 ${limitCount} 首）`;
+                API.toast(msg);
+                
+                if (STATE.currentIndex === -1 && STATE.playingPlaylistId === currentListObj.id) {
+                    playTrack(0, currentListObj.id);
+                }
+            } else {
+                API.toast("歌单解析失败或为空，请检查ID权限");
             }
-            const currentListObj = getCurrentPlaylist();
-            if (currentListObj.tracks.length >= CONFIG.MAX_TRACKS_PER_LIST) {
-                API.toast(`歌单已达到上限 (${CONFIG.MAX_TRACKS_PER_LIST}首)，无法继续导入`);
-                return;
-            }
-            const existingKeys = new Set(currentListObj.tracks.map(trackDedupeKey));
-            let newTracks = tracks.filter(t => !existingKeys.has(trackDedupeKey(t)));
-            const dupeCount = tracks.length - newTracks.length;
-            let limitCount = 0;
-            if (currentListObj.tracks.length + newTracks.length > CONFIG.MAX_TRACKS_PER_LIST) {
-                const allowed = CONFIG.MAX_TRACKS_PER_LIST - currentListObj.tracks.length;
-                limitCount = newTracks.length - allowed;
-                newTracks = newTracks.slice(0, allowed);
-            }
-            currentListObj.tracks.push(...newTracks);
-            savePlaylist();
-            STATE.isShowingSearch = false;
-            renderListUI();
-            UI.input.value = '';
-            let msg = `成功导入 ${newTracks.length} 首歌曲至 [${currentListObj.name}]`;
-            if (dupeCount > 0) msg += `（跳过 ${dupeCount} 首重复）`;
-            if (limitCount > 0) msg += `（因容量限制，截断了 ${limitCount} 首）`;
-            API.toast(msg);
-            if (STATE.currentIndex === -1 && STATE.playingPlaylistId === currentListObj.id && newTracks.length) {
-                playTrack(0, currentListObj.id);
-            }
-        } catch (e) {
-            console.error('[ApV] 搜索/导入操作失败：', e);
-            API.toast(`${mode === 'search' ? '搜索' : '操作'}失败：${e?.message || '未知错误'}`);
-        } finally {
-            UI.addBtn.textContent = originalText;
-            UI.addBtn.disabled = false;
-            UI.addBtn.removeAttribute('aria-busy');
         }
+        
+        UI.addBtn.textContent = originalText;
+        UI.addBtn.disabled = false;
     };
 
-    UI.input.onkeydown = (e) => {
-        if (e.key === 'Enter') { e.preventDefault(); UI.addBtn.click(); }
+    UI.input.onkeypress = (e) => {
+        if (e.key === 'Enter') UI.addBtn.click();
     };
     UI.input.oninput = () => {
         if (STATE.currentInputMode === 'search_local') {
