@@ -690,7 +690,7 @@
         .fm-page-play .fm-play-lyrics-settings { margin-top:2px; }
         .fm-page-play .fm-play-lyrics-settings .fm-lrc-settings-panel.open, .fm-page-more .fm-play-lyrics-settings .fm-lrc-settings-panel.open { display:flex; padding:8px 0 4px; border-top:0; }
         .fm-page-play .fm-quick-card { min-height:52px; box-sizing:border-box; }
-        .fm-bottom-nav { grid-template-columns:repeat(2,1fr); }
+        .fm-bottom-nav { grid-template-columns:repeat(3,minmax(0,1fr)); }
 
         .fm-app-head { display:flex; align-items:center; justify-content:space-between; padding:14px 16px 10px; flex:0 0 auto; }
         .fm-brand { display:flex; align-items:center; min-width:0; }
@@ -739,6 +739,10 @@
         .fm-theme-row .fm-theme-dot { width:28px; height:28px; }
         .fm-more-row { display:flex; align-items:center; gap:12px; min-height:38px; border-top:0; font-size:11px; color:var(--fm-text-sub); }
         .fm-more-row + .fm-more-row { margin-top:4px; }
+        .fm-more-row.fm-note-row { align-items:flex-start; padding:8px 0; }
+        .fm-more-row.fm-note-row > span { width:auto; flex:1 1 auto; min-width:0; overflow-wrap:anywhere; }
+        .fm-page-functions .fm-more-row > span { width:42%; flex:0 0 42%; }
+        .fm-page-functions .fm-more-row .fm-bg-btn { min-width:0; }
         .fm-more-row > span { width:72px; flex:0 0 72px; }
         .fm-more-row input[type=range] { flex:1; min-width:0; accent-color:var(--fm-accent); }
         .fm-appearance-pair { display:grid; grid-template-columns:1fr 1fr; gap:14px; align-items:center; }
@@ -757,7 +761,7 @@
         .fm-switch input:checked + .fm-switch-slider { background:var(--fm-accent); }
         .fm-switch input:checked + .fm-switch-slider::before { transform:translateX(18px); }
 
-        .fm-bottom-nav { display:grid; grid-template-columns:repeat(2,1fr); gap:4px; padding:8px 8px max(8px, env(safe-area-inset-bottom)); border-top:0; background:rgba(0,0,0,.02); flex:0 0 auto; }
+        .fm-bottom-nav { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:4px; padding:8px 8px max(8px, env(safe-area-inset-bottom)); border-top:0; background:rgba(0,0,0,.02); flex:0 0 auto; }
         .fm-nav-btn { min-width:0; height:44px; border:0; border-radius:13px; background:transparent; color:var(--fm-text-sub); display:flex; flex-direction:column; align-items:center; justify-content:center; gap:3px; cursor:pointer; font-size:10px; }
         .fm-nav-btn i { font-size:15px; }
         .fm-nav-btn.active { color:var(--fm-accent); background:transparent; }
@@ -963,6 +967,18 @@
                         </div>
                     </div>
 
+
+                </section>
+
+                <!-- 功能设置 -->
+                <section class="fm-page fm-page-functions" data-page="functions">
+                    <div class="fm-page-title">
+                        <div>
+                            <div class="fm-section-kicker">TOOLS & DATA</div>
+                            <h2>功能设置</h2>
+                        </div>
+                    </div>
+
                     <div class="fm-settings-section">
                         <div class="fm-settings-section-title">缓存与维护</div>
                         <div class="fm-more-row">
@@ -990,11 +1006,11 @@
                             <button class="fm-bg-btn" id="fm-backup-import-btn" type="button"><i class="fas fa-file-import"></i> 导入备份包</button>
                             <input id="fm-backup-file-input" type="file" accept=".apvpack,.json,application/json,*/*" hidden>
                         </div>
-                        <div class="fm-more-row" style="font-size:0.78em; opacity:0.68; line-height:1.5;">
-                            <span style="width:100%;">导出为单个 .apvpack 文件，包含全部歌单及播放器外观设置。导入时可选择合并或完整恢复。</span>
+                        <div class="fm-more-row fm-note-row" style="font-size:0.78em; opacity:0.68; line-height:1.6;">
+                            <span>导出为单个 .apvpack 文件，包含全部歌单及播放器外观设置。导入时可选择合并或完整恢复。</span>
                         </div>
-                        <div class="fm-more-row" style="font-size:0.78em; opacity:0.58; line-height:1.5;">
-                            <span style="width:100%;">以上操作只处理播放器自己的数据，不会清空 SillyTavern 的全局缓存；不会删除歌单、壁纸、小图或外观设置。</span>
+                        <div class="fm-more-row fm-note-row" style="font-size:0.78em; opacity:0.58; line-height:1.6;">
+                            <span>以上操作只处理播放器自己的数据，不会清空 SillyTavern 的全局缓存；不会删除歌单、壁纸、小图或外观设置。</span>
                         </div>
                     </div>
                 </section>
@@ -1006,6 +1022,9 @@
                 </button>
                 <button class="fm-nav-btn" data-page-target="more">
                     <i class="fas fa-sliders-h"></i><span>外观设置</span>
+                </button>
+                <button class="fm-nav-btn" data-page-target="functions">
+                    <i class="fas fa-tools"></i><span>功能设置</span>
                 </button>
             </nav>
         </div>
