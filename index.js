@@ -274,13 +274,34 @@
             };
         },
         async _fetchJson(rawUrl, isUsable = data => data != null) {
+            // 所有网络请求都设置超时，避免 Android WebView 中接口无响应时永久挂起。
+            const requestJson = async (url, timeoutMs = 4000) => {
+                const controller = typeof AbortController !== 'undefined' ? new AbortController() : null;
+                const timer = controller ? setTimeout(() => controller.abort(), timeoutMs) : null;
+                try {
+                    const res = await fetch(url, controller ? { signal: controller.signal, cache: 'no-store' } : { cache: 'no-store' });
+                    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+                    return await res.json();
+                } finally {
+                    if (timer) clearTimeout(timer);
+                }
+            };
+            let firstError = null;
             try {
-                const res = await fetch(rawUrl);
-                const data = await res.json();
+                const data = await requestJson(rawUrl);
                 if (isUsable(data)) return data;
-            } catch (e) {}
-            const res = await fetch(`https://corsproxy.io/?${encodeURIComponent(rawUrl)}`);
-            return await res.json();
+                firstError = new Error('接口返回了空数据或无法识别的数据');
+            } catch (e) { firstError = e; }
+            // 代理仅作为一次备用尝试，同样有超时；不再无限等待。
+            try {
+                const data = await requestJson(`https://corsproxy.io/?${encodeURIComponent(rawUrl)}`, 4000);
+                if (isUsable(data)) return data;
+                throw new Error('代理接口返回了空数据或无法识别的数据');
+            } catch (e) {
+                const err = new Error(`音乐接口请求失败：${e?.name === 'AbortError' ? '请求超时' : (e?.message || '网络错误')}`);
+                err.cause = firstError;
+                throw err;
+            }
         },
         async parsePlaylist(inputVal, source) {
             try {
@@ -297,20 +318,24 @@
             const query = String(keyword || '').trim();
             if (!query) return [];
             const safeKeyword = encodeURIComponent(query);
-            // 网易云偶发限流或某个音源暂时不可用时，依次尝试当前较常见的备用音源。
-            // 采用串行请求，避免一次搜索同时打出多组请求触发接口频率限制。
-            const sources = ['netease', 'joox', 'bilibili', 'kuwo'];
+            // 先尝试主要音源，只有未得到结果时才尝试官方文档列出的常见备用源。
+            // 每个请求由 _fetchJson 提供超时，避免多次点击后积累大量悬挂请求。
+            const sources = ['netease', 'joox'];
+            let lastError = null;
             for (const source of sources) {
                 const rawUrl = `https://music-api.gdstudio.xyz/api.php?types=search&source=${source}&name=${safeKeyword}&count=15&pages=1`;
                 try {
-                    const data = await this._fetchJson(rawUrl, value => this._extractArray(value).some(t => t && (t.id || t.name || t.title)));
+                    const data = await this._fetchJson(rawUrl, value => {
+                        const rows = this._extractArray(value);
+                        return rows.length > 0 && rows.some(t => t && (t.id || t.track_id || t.songId) && (t.name || t.title || t.songName));
+                    });
                     const rows = this._extractArray(data);
-                    const results = rows.filter(t => t && (t.id || t.track_id) && (t.name || t.title)).map(t => {
+                    const results = rows.filter(t => t && (t.id || t.track_id || t.songId) && (t.name || t.title || t.songName)).map(t => {
                         const id = String(t.id || t.track_id || t.songId || '');
                         const artistValue = t.artist ?? t.author ?? t.singer ?? t.ar ?? '';
                         const artist = Array.isArray(artistValue)
                             ? artistValue.map(a => typeof a === 'string' ? a : (a?.name || '')).filter(Boolean).join('/')
-                            : String(artistValue || '未知歌手');
+                            : (typeof artistValue === 'object' && artistValue !== null ? String(artistValue.name || '') : String(artistValue || ''));
                         return {
                             title: String(t.name || t.title || t.songName || '未知歌曲'),
                             artist: artist || '未知歌手',
@@ -318,14 +343,16 @@
                             rawId: id,
                             lyricId: String(t.lyric_id || t.lyricId || id),
                             source: t.source || source,
-                            pic: t.pic || t.cover || null
+                            pic: t.pic || t.cover || (t.pic_id ? `https://music-api.gdstudio.xyz/api.php?types=pic&source=${source}&id=${encodeURIComponent(t.pic_id)}&size=300` : null)
                         };
                     });
                     if (results.length) return results;
                 } catch (e) {
+                    lastError = e;
                     console.warn(`[ApV] ${source} 单曲搜索失败：`, e);
                 }
             }
+            if (lastError) throw lastError;
             return [];
         },
         async fillTrackInfo(title, artist) {
@@ -2409,15 +2436,24 @@
         }
 
         if (STATE.currentInputMode === 'search') {
-            const results = await API.searchTrack(val);
-            if (results.length > 0) {
-                STATE.searchResults = results;
-                STATE.isShowingSearch = true;
-                renderListUI();
-                API.toast(`搜索到 ${results.length} 首相关歌曲`);
-            } else {
-                API.toast("未搜索到结果，请换个关键词");
+            try {
+                const results = await API.searchTrack(val);
+                if (results.length > 0) {
+                    STATE.searchResults = results;
+                    STATE.isShowingSearch = true;
+                    renderListUI();
+                    API.toast(`搜索到 ${results.length} 首相关歌曲`);
+                } else {
+                    API.toast("没有搜到结果。可换关键词后重试。");
+                }
+            } catch (e) {
+                console.error('[ApV] 单曲搜索失败：', e);
+                API.toast(`搜索失败：${e?.message || '网络请求异常'}。请稍后重试。`);
+            } finally {
+                UI.addBtn.textContent = originalText;
+                UI.addBtn.disabled = false;
             }
+            return;
         } else {
             const tracks = await API.parsePlaylist(val, STATE.currentInputMode);
             if (tracks.length > 0) {
