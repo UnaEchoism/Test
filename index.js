@@ -20,7 +20,7 @@
     // ================= 核心配置 =================
     const CONFIG = {
         ID: 'st-flow-music-player-pro',
-        VERSION: '4.3.2-test',
+        VERSION: '4.3.2-test-backup1',
         Z_INDEX: 2147483640,
         SAFE_MARGIN: 20, // 增加安全边距，防止贴边太紧
         DEFAULT_THEME: 'adaptive',
@@ -980,6 +980,18 @@
                         <div class="fm-more-row">
                             <span>存储占用检查</span>
                             <button class="fm-bg-btn" id="fm-cache-check-btn"><i class="fas fa-database"></i> 检查</button>
+                        </div>
+                        <div class="fm-more-row">
+                            <span>导出歌单与设置</span>
+                            <button class="fm-bg-btn" id="fm-backup-export-btn" type="button"><i class="fas fa-file-export"></i> 导出备份包</button>
+                        </div>
+                        <div class="fm-more-row">
+                            <span>导入歌单与设置</span>
+                            <button class="fm-bg-btn" id="fm-backup-import-btn" type="button"><i class="fas fa-file-import"></i> 导入备份包</button>
+                            <input id="fm-backup-file-input" type="file" accept=".apvpack,.json,application/json" hidden>
+                        </div>
+                        <div class="fm-more-row" style="font-size:0.78em; opacity:0.68; line-height:1.5;">
+                            <span style="width:100%;">导出为单个 .apvpack 文件，包含全部歌单及播放器外观设置。导入时可选择合并或完整恢复。</span>
                         </div>
                         <div class="fm-more-row" style="font-size:0.78em; opacity:0.58; line-height:1.5;">
                             <span style="width:100%;">以上操作只处理播放器自己的数据，不会清空 SillyTavern 的全局缓存；不会删除歌单、壁纸、小图或外观设置。</span>
@@ -3001,6 +3013,142 @@
             console.warn('[АрⅤ] 存储检查失败', e);
         }
     };
+
+    // ================= 歌单与设置备份 / 迁移 =================
+    const backupExportBtn = wrapper.querySelector('#fm-backup-export-btn');
+    const backupImportBtn = wrapper.querySelector('#fm-backup-import-btn');
+    const backupFileInput = wrapper.querySelector('#fm-backup-file-input');
+
+    function createBackupPayload() {
+        return {
+            format: 'apv-player-backup',
+            formatVersion: 1,
+            playerVersion: CONFIG.VERSION,
+            exportedAt: new Date().toISOString(),
+            playlists: STATE.playlists.map(list => ({
+                ...list,
+                tracks: (Array.isArray(list.tracks) ? list.tracks : []).map(track => {
+                    const copy = { ...track };
+                    delete copy.__retriedOnError;
+                    return copy;
+                })
+            })),
+            settings: { ...savedSettings }
+        };
+    }
+
+    function downloadBackup() {
+        try {
+            const payload = createBackupPayload();
+            const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json;charset=utf-8' });
+            const url = targetWin.URL.createObjectURL(blob);
+            const link = targetDoc.createElement('a');
+            const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+            link.href = url;
+            link.download = `ApV_播放器备份_${stamp}.apvpack`;
+            link.style.display = 'none';
+            targetDoc.body.appendChild(link);
+            link.click();
+            link.remove();
+            targetWin.setTimeout(() => targetWin.URL.revokeObjectURL(url), 1500);
+            API.toast(`备份已导出：${STATE.playlists.length} 个歌单`);
+        } catch (err) {
+            console.warn('[ApV] backup export failed:', err);
+            API.toast('备份导出失败，请检查浏览器下载权限或存储空间。');
+        }
+    }
+
+    function normalizeImportedPlaylists(value) {
+        if (!Array.isArray(value) || value.length === 0) throw new Error('备份文件中没有有效歌单。');
+        const result = value.filter(p => p && typeof p === 'object').map((p, i) => ({
+            id: String(p.id || `import_${Date.now()}_${i}`),
+            name: String(p.name || `歌单 ${i + 1}`).slice(0, 40),
+            description: String(p.description || '').slice(0, 160),
+            cover: typeof p.cover === 'string' ? p.cover : '',
+            color: /^#[0-9a-fA-F]{6}$/.test(String(p.color || '')) ? String(p.color) : '',
+            tracks: dedupeAndLimitTracks(Array.isArray(p.tracks) ? p.tracks.filter(t => t && typeof t === 'object') : [])
+        }));
+        if (!result.length) throw new Error('备份文件中没有可恢复的歌单。');
+        if (!result.some(p => p.id === 'default')) {
+            result.unshift({ id: 'default', name: '默认列表', description: '', cover: '', color: '', tracks: [] });
+        } else {
+            const defaultIndex = result.findIndex(p => p.id === 'default');
+            if (defaultIndex > 0) result.unshift(result.splice(defaultIndex, 1)[0]);
+        }
+        return result;
+    }
+
+    async function importBackupFile(file) {
+        if (!file) return;
+        try {
+            if (file.size > 100 * 1024 * 1024) throw new Error('备份文件超过 100 MB，已停止导入以保护浏览器。');
+            const parsed = JSON.parse(await file.text());
+            if (!parsed || parsed.format !== 'apv-player-backup' || !Array.isArray(parsed.playlists) || !parsed.settings || typeof parsed.settings !== 'object') {
+                throw new Error('这不是有效的 ApV 播放器备份文件。请使用 .apvpack 备份包。');
+            }
+            const importedPlaylists = normalizeImportedPlaylists(parsed.playlists);
+            const importedSettings = parsed.settings;
+            const modeChoice = targetWin.prompt(
+                `已读取备份文件。\\n\\n版本：${String(parsed.playerVersion || '未知')}\\n歌单：${importedPlaylists.length} 个\\n歌曲：${importedPlaylists.reduce((n, p) => n + p.tracks.length, 0)} 首\\n\\n请输入 1：完整恢复（替换当前歌单与设置）\\n请输入 2：合并歌单（保留现有歌单并导入备份歌单）\\n\\n两种模式都会恢复备份中的播放器外观设置。取消则不导入。`,
+                '2'
+            );
+            if (modeChoice !== '1' && modeChoice !== '2') return;
+            const mode = modeChoice === '1';
+
+            if (mode) {
+                const confirmed = targetWin.confirm('完整恢复会替换当前歌单和播放器设置。建议先导出一份当前备份。确定继续吗？');
+                if (!confirmed) return;
+                STATE.playlists = importedPlaylists;
+            } else {
+                const existingIds = new Set(STATE.playlists.map(p => String(p.id)));
+                const defaultCurrent = STATE.playlists.find(p => p.id === 'default') || STATE.playlists[0];
+                const defaultIncoming = importedPlaylists.find(p => p.id === 'default');
+                if (defaultCurrent && defaultIncoming) {
+                    defaultCurrent.tracks = dedupeAndLimitTracks([...(defaultCurrent.tracks || []), ...(defaultIncoming.tracks || [])]);
+                    if (!defaultCurrent.description && defaultIncoming.description) defaultCurrent.description = defaultIncoming.description;
+                    if (!defaultCurrent.cover && defaultIncoming.cover) defaultCurrent.cover = defaultIncoming.cover;
+                    if (!defaultCurrent.color && defaultIncoming.color) defaultCurrent.color = defaultIncoming.color;
+                }
+                for (const list of importedPlaylists.filter(p => p.id !== 'default')) {
+                    const copy = { ...list, tracks: [...list.tracks] };
+                    if (existingIds.has(String(copy.id))) copy.id = `import_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+                    const sameName = STATE.playlists.some(p => p.name === copy.name);
+                    if (sameName) copy.name = `${copy.name}（导入）`.slice(0, 40);
+                    existingIds.add(String(copy.id));
+                    STATE.playlists.push(copy);
+                }
+            }
+
+            // 防止异常文件注入超出预期的播放器设置；只恢复原设置对象中的已知键。
+            const allowedSettings = Object.keys(savedSettings);
+            for (const key of allowedSettings) {
+                if (Object.prototype.hasOwnProperty.call(importedSettings, key)) savedSettings[key] = importedSettings[key];
+            }
+            STATE.currentTheme = savedSettings.theme || CONFIG.DEFAULT_THEME;
+            savePlaylist();
+            saveSettings();
+            applySettings(false);
+            UI.themeDots.forEach(dot => dot.classList.toggle('active', dot.dataset.theme === STATE.currentTheme));
+            STATE.currentPlaylistId = STATE.playlists[0]?.id || 'default';
+            STATE.playingPlaylistId = STATE.currentPlaylistId;
+            STATE.isPlaylistHome = true;
+            STATE.isShowingSearch = false;
+            renderListUI();
+            API.toast(mode ? '已完整恢复歌单与播放器设置。' : '已合并歌单并恢复播放器设置。');
+        } catch (err) {
+            console.warn('[ApV] backup import failed:', err);
+            targetWin.alert(`导入失败：${err.message || '文件读取或数据格式异常。'}\\n\\n当前播放器数据未主动清空。`);
+        } finally {
+            if (backupFileInput) backupFileInput.value = '';
+        }
+    }
+
+    backupExportBtn?.addEventListener('click', downloadBackup);
+    backupImportBtn?.addEventListener('click', () => backupFileInput?.click());
+    backupFileInput?.addEventListener('change', () => {
+        const file = backupFileInput.files?.[0];
+        if (file) importBackupFile(file);
+    });
 
     UI.ratioBtn.onclick = () => {
         const ratios = ['default', '3:4', '9:16'];
