@@ -20,7 +20,7 @@
     // ================= 核心配置 =================
     const CONFIG = {
         ID: 'st-flow-music-player-pro',
-        VERSION: '4.3.2-test-backup1',
+        VERSION: '4.3.2-test-backup2',
         Z_INDEX: 2147483640,
         SAFE_MARGIN: 20, // 增加安全边距，防止贴边太紧
         DEFAULT_THEME: 'adaptive',
@@ -294,20 +294,39 @@
             }
         },
         async searchTrack(keyword) {
-            const safeKeyword = encodeURIComponent(keyword.trim());
-            const rawUrl = `https://music-api.gdstudio.xyz/api.php?types=search&source=netease&name=${safeKeyword}&count=15&pages=1`;
-            try {
-                const data = await this._fetchJson(rawUrl, data => Array.isArray(data) && data.length > 0);
-                return Array.isArray(data) ? data.map(t => ({
-                    title: t.name,
-                    artist: Array.isArray(t.artist) ? t.artist.join('/') : t.artist,
-                    id: t.id,
-                    lyricId: t.lyric_id || t.id,
-                    source: t.source || 'netease'
-                })) : [];
-            } catch (e) {
-                return [];
+            const query = String(keyword || '').trim();
+            if (!query) return [];
+            const safeKeyword = encodeURIComponent(query);
+            // 网易云偶发限流或某个音源暂时不可用时，依次尝试当前较常见的备用音源。
+            // 采用串行请求，避免一次搜索同时打出多组请求触发接口频率限制。
+            const sources = ['netease', 'joox', 'bilibili', 'kuwo'];
+            for (const source of sources) {
+                const rawUrl = `https://music-api.gdstudio.xyz/api.php?types=search&source=${source}&name=${safeKeyword}&count=15&pages=1`;
+                try {
+                    const data = await this._fetchJson(rawUrl, value => this._extractArray(value).some(t => t && (t.id || t.name || t.title)));
+                    const rows = this._extractArray(data);
+                    const results = rows.filter(t => t && (t.id || t.track_id) && (t.name || t.title)).map(t => {
+                        const id = String(t.id || t.track_id || t.songId || '');
+                        const artistValue = t.artist ?? t.author ?? t.singer ?? t.ar ?? '';
+                        const artist = Array.isArray(artistValue)
+                            ? artistValue.map(a => typeof a === 'string' ? a : (a?.name || '')).filter(Boolean).join('/')
+                            : String(artistValue || '未知歌手');
+                        return {
+                            title: String(t.name || t.title || t.songName || '未知歌曲'),
+                            artist: artist || '未知歌手',
+                            id,
+                            rawId: id,
+                            lyricId: String(t.lyric_id || t.lyricId || id),
+                            source: t.source || source,
+                            pic: t.pic || t.cover || null
+                        };
+                    });
+                    if (results.length) return results;
+                } catch (e) {
+                    console.warn(`[ApV] ${source} 单曲搜索失败：`, e);
+                }
             }
+            return [];
         },
         async fillTrackInfo(title, artist) {
             const keyword = encodeURIComponent(`${title} ${artist}`.trim());
@@ -988,7 +1007,7 @@
                         <div class="fm-more-row">
                             <span>导入歌单与设置</span>
                             <button class="fm-bg-btn" id="fm-backup-import-btn" type="button"><i class="fas fa-file-import"></i> 导入备份包</button>
-                            <input id="fm-backup-file-input" type="file" accept=".apvpack,.json,application/json" hidden>
+                            <input id="fm-backup-file-input" type="file" accept=".apvpack,.json,application/json,*/*" hidden>
                         </div>
                         <div class="fm-more-row" style="font-size:0.78em; opacity:0.68; line-height:1.5;">
                             <span style="width:100%;">导出为单个 .apvpack 文件，包含全部歌单及播放器外观设置。导入时可选择合并或完整恢复。</span>
@@ -1940,8 +1959,10 @@
 
         if (!track.url) {
             UI.title.textContent = "解析音源中...";
-            let searchRes = await API.fillTrackInfo(track.title, track.artist);
-            if (!searchRes && track.rawId) searchRes = { id: track.rawId, source: track.source || 'netease' };
+            // 搜索结果/导入歌单若已带曲目 ID，优先使用原音源，避免备用音源的歌曲被重新匹配成网易云的同名曲目。
+            let searchRes = (track.rawId || track.id)
+                ? { id: track.rawId || track.id, source: track.source || 'netease', lyric_id: track.lyricId || track.lyric_id }
+                : await API.fillTrackInfo(track.title, track.artist);
             
             if (searchRes) {
                 track.source = searchRes.source || track.source;
@@ -3078,18 +3099,39 @@
         return result;
     }
 
+    function readBackupFileText(file) {
+        // 部分 Android WebView / 文件选择器没有实现 File.text()，用 FileReader 兼容旧环境。
+        if (file && typeof file.text === 'function') {
+            return file.text().catch(() => readBackupFileTextWithReader(file));
+        }
+        return readBackupFileTextWithReader(file);
+    }
+
+    function readBackupFileTextWithReader(file) {
+        return new Promise((resolve, reject) => {
+            try {
+                const Reader = targetWin.FileReader || FileReader;
+                const reader = new Reader();
+                reader.onload = () => resolve(String(reader.result ?? ''));
+                reader.onerror = () => reject(reader.error || new Error('浏览器无法读取所选文件。'));
+                reader.readAsText(file, 'UTF-8');
+            } catch (err) { reject(err); }
+        });
+    }
+
     async function importBackupFile(file) {
         if (!file) return;
         try {
             if (file.size > 100 * 1024 * 1024) throw new Error('备份文件超过 100 MB，已停止导入以保护浏览器。');
-            const parsed = JSON.parse(await file.text());
+            const rawText = await readBackupFileText(file);
+            const parsed = JSON.parse(String(rawText).replace(/^\uFEFF/, '').trim());
             if (!parsed || parsed.format !== 'apv-player-backup' || !Array.isArray(parsed.playlists) || !parsed.settings || typeof parsed.settings !== 'object') {
-                throw new Error('这不是有效的 ApV 播放器备份文件。请使用 .apvpack 备份包。');
+                throw new Error('文件已读取，但内容不是可识别的 ApV 播放器备份。请重新从播放器点击“导出备份包”，不要用文档软件另存或修改文件内容。');
             }
             const importedPlaylists = normalizeImportedPlaylists(parsed.playlists);
             const importedSettings = parsed.settings;
             const modeChoice = targetWin.prompt(
-                `已读取备份文件。\\n\\n版本：${String(parsed.playerVersion || '未知')}\\n歌单：${importedPlaylists.length} 个\\n歌曲：${importedPlaylists.reduce((n, p) => n + p.tracks.length, 0)} 首\\n\\n请输入 1：完整恢复（替换当前歌单与设置）\\n请输入 2：合并歌单（保留现有歌单并导入备份歌单）\\n\\n两种模式都会恢复备份中的播放器外观设置。取消则不导入。`,
+                `已读取备份文件。\n\n版本：${String(parsed.playerVersion || '未知')}\n歌单：${importedPlaylists.length} 个\n歌曲：${importedPlaylists.reduce((n, p) => n + p.tracks.length, 0)} 首\n\n请输入 1：完整恢复（替换当前歌单与设置）\n请输入 2：合并歌单（保留现有歌单并导入备份歌单）\n\n两种模式都会恢复备份中的播放器外观设置。取消则不导入。`,
                 '2'
             );
             if (modeChoice !== '1' && modeChoice !== '2') return;
@@ -3137,7 +3179,7 @@
             API.toast(mode ? '已完整恢复歌单与播放器设置。' : '已合并歌单并恢复播放器设置。');
         } catch (err) {
             console.warn('[ApV] backup import failed:', err);
-            targetWin.alert(`导入失败：${err.message || '文件读取或数据格式异常。'}\\n\\n当前播放器数据未主动清空。`);
+            targetWin.alert(`导入失败：${err.message || '文件读取或数据格式异常。'}\n\n当前播放器数据未主动清空。`);
         } finally {
             if (backupFileInput) backupFileInput.value = '';
         }
